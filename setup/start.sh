@@ -46,7 +46,7 @@ fi
 # in the first dialog prompt, so we should do this before that starts.
 cat > /usr/local/bin/mailinabox << EOF;
 #!/bin/bash
-cd `pwd`
+cd $(pwd)
 source setup/start.sh
 EOF
 chmod +x /usr/local/bin/mailinabox
@@ -67,6 +67,10 @@ fi
 fi
 
 # Create the STORAGE_USER and STORAGE_ROOT directory if they don't already exist.
+#
+# Set the directory and all of its parent directories' permissions to world
+# readable since it holds files owned by different processes.
+#
 # If the STORAGE_ROOT is missing the mailinabox.version file that lists a
 # migration (schema) number for the files stored there, assume this is a fresh
 # installation to that directory and write the file to contain the current
@@ -77,9 +81,11 @@ fi
 if [ ! -d $STORAGE_ROOT ]; then
 	mkdir -p $STORAGE_ROOT
 fi
+f=$STORAGE_ROOT
+while [[ $f != / ]]; do chmod a+rx "$f"; f=$(dirname "$f"); done;
 if [ ! -f $STORAGE_ROOT/mailinabox.version ]; then
-	echo $(setup/migrate.py --current) > $STORAGE_ROOT/mailinabox.version
-	chown $STORAGE_USER.$STORAGE_USER $STORAGE_ROOT/mailinabox.version
+	setup/migrate.py --current > $STORAGE_ROOT/mailinabox.version
+	chown $STORAGE_USER:$STORAGE_USER $STORAGE_ROOT/mailinabox.version
 fi
 
 # Save the global options in /etc/mailinabox.conf so that standalone
@@ -94,7 +100,7 @@ PUBLIC_IP=$PUBLIC_IP
 PUBLIC_IPV6=$PUBLIC_IPV6
 PRIVATE_IP=$PRIVATE_IP
 PRIVATE_IPV6=$PRIVATE_IPV6
-MTA_STS_MODE=${MTA_STS_MODE-}
+MTA_STS_MODE=${DEFAULT_MTA_STS_MODE:-enforce}
 EOF
 
 # Start service configuration.
@@ -161,7 +167,7 @@ if management/status_checks.py --check-primary-hostname; then
 	echo "If you have a DNS problem put the box's IP address in the URL"
 	echo "(https://$PUBLIC_IP/admin) but then check the TLS fingerprint:"
 	openssl x509 -in $STORAGE_ROOT/ssl/ssl_certificate.pem -noout -fingerprint -sha256\
-        	| sed "s/SHA256 Fingerprint=//"
+        	| sed "s/SHA256 Fingerprint=//i"
 else
 	echo https://$PUBLIC_IP/admin
 	echo
@@ -169,7 +175,7 @@ else
 	echo the certificate fingerprint matches:
 	echo
 	openssl x509 -in $STORAGE_ROOT/ssl/ssl_certificate.pem -noout -fingerprint -sha256\
-        	| sed "s/SHA256 Fingerprint=//"
+        	| sed "s/SHA256 Fingerprint=//i"
 	echo
 	echo Then you can confirm the security exception and continue.
 	echo

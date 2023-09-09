@@ -1,5 +1,8 @@
 #!/usr/local/lib/mailinabox/env/bin/python3
 #
+# The API can be accessed on the command line, e.g. use `curl` like so:
+#    curl --user $(</var/lib/mailinabox/api.key): http://localhost:10222/mail/users
+#
 # During development, you can start the Mail-in-a-Box control panel
 # by running this script, e.g.:
 #
@@ -22,7 +25,7 @@ from mfa import get_public_mfa_state, provision_totp, validate_totp_secret, enab
 
 env = utils.load_environment()
 
-auth_service = auth.KeyAuthService()
+auth_service = auth.AuthService()
 
 # We may deploy via a symbolic link, which confuses flask's template finding.
 me = __file__
@@ -53,8 +56,10 @@ def authorized_personnel_only(viewfunc):
 		try:
 			email, privs = auth_service.authenticate(request, env)
 		except ValueError as e:
-			# Write a line in the log recording the failed login
-			log_failed_login(request)
+			# Write a line in the log recording the failed login, unless no authorization header
+			# was given which can happen on an initial request before a 403 response.
+			if "Authorization" in request.headers:
+				log_failed_login(request)
 
 			# Authentication failed.
 			error = str(e)
@@ -116,9 +121,9 @@ def index():
 	no_users_exist = (len(get_mail_users(env)) == 0)
 	no_admins_exist = (len(get_admins(env)) == 0)
 
-	utils.fix_boto() # must call prior to importing boto
-	import boto.s3
-	backup_s3_hosts = [(r.name, r.endpoint) for r in boto.s3.regions()]
+	import boto3.s3
+	backup_s3_hosts = [(r, f"s3.{r}.amazonaws.com") for r in boto3.session.Session().get_available_regions('s3')]
+
 
 	return render_template('index.html',
 		hostname=env['PRIMARY_HOSTNAME'],
@@ -131,11 +136,12 @@ def index():
 		csr_country_codes=csr_country_codes,
 	)
 
-@app.route('/me')
-def me():
+# Create a session key by checking the username/password in the Authorization header.
+@app.route('/login', methods=["POST"])
+def login():
 	# Is the caller authorized?
 	try:
-		email, privs = auth_service.authenticate(request, env)
+		email, privs = auth_service.authenticate(request, env, login_only=True)
 	except ValueError as e:
 		if "missing-totp-token" in str(e):
 			return json_response({
@@ -150,18 +156,28 @@ def me():
 				"reason": str(e),
 			})
 
+	# Return a new session for the user.
 	resp = {
 		"status": "ok",
 		"email": email,
 		"privileges": privs,
+		"api_key": auth_service.create_session_key(email, env, type='login'),
 	}
 
-	# Is authorized as admin? Return an API key for future use.
-	if "admin" in privs:
-		resp["api_key"] = auth_service.create_user_key(email, env)
+	app.logger.info("New login session created for {}".format(email))
 
 	# Return.
 	return json_response(resp)
+
+@app.route('/logout', methods=["POST"])
+def logout():
+	try:
+		email, _ = auth_service.authenticate(request, env, logout=True)
+		app.logger.info("{} logged out".format(email))
+	except ValueError as e:
+		pass
+	finally:
+		return json_response({ "status": "ok" })
 
 # MAIL
 
@@ -219,7 +235,7 @@ def mail_aliases():
 	if request.args.get("format", "") == "json":
 		return json_response(get_mail_aliases_ex(env))
 	else:
-		return "".join(address+"\t"+receivers+"\t"+(senders or "")+"\n" for address, receivers, senders in get_mail_aliases(env))
+		return "".join(address+"\t"+receivers+"\t"+(senders or "")+"\n" for address, receivers, senders, auto in get_mail_aliases(env))
 
 @app.route('/mail/aliases/add', methods=['POST'])
 @authorized_personnel_only
@@ -277,17 +293,50 @@ def dns_set_secondary_nameserver():
 @app.route('/dns/custom')
 @authorized_personnel_only
 def dns_get_records(qname=None, rtype=None):
-	from dns_update import get_custom_dns_config
-	return json_response([
-	{
-		"qname": r[0],
-		"rtype": r[1],
-		"value": r[2],
-	}
-	for r in get_custom_dns_config(env)
-	if r[0] != "_secondary_nameserver"
-		and (not qname or r[0] == qname)
-		and (not rtype or r[1] == rtype) ])
+	# Get the current set of custom DNS records.
+	from dns_update import get_custom_dns_config, get_dns_zones
+	records = get_custom_dns_config(env, only_real_records=True)
+
+	# Filter per the arguments for the more complex GET routes below.
+	records = [r for r in records
+		if (not qname or r[0] == qname)
+		and (not rtype or r[1] == rtype) ]
+
+	# Make a better data structure.
+	records = [
+        {
+                "qname": r[0],
+                "rtype": r[1],
+                "value": r[2],
+		"sort-order": { },
+        } for r in records ]
+
+	# To help with grouping by zone in qname sorting, label each record with which zone it is in.
+	# There's an inconsistency in how we handle zones in get_dns_zones and in sort_domains, so
+	# do this first before sorting the domains within the zones.
+	zones = utils.sort_domains([z[0] for z in get_dns_zones(env)], env)
+	for r in records:
+		for z in zones:
+			if r["qname"] == z or r["qname"].endswith("." + z):
+				r["zone"] = z
+				break
+
+	# Add sorting information. The 'created' order follows the order in the YAML file on disk,
+	# which tracs the order entries were added in the control panel since we append to the end.
+	# The 'qname' sort order sorts by our standard domain name sort (by zone then by qname),
+	# then by rtype, and last by the original order in the YAML file (since sorting by value
+	# may not make sense, unless we parse IP addresses, for example).
+	for i, r in enumerate(records):
+		r["sort-order"]["created"] = i
+	domain_sort_order = utils.sort_domains([r["qname"] for r in records], env)
+	for i, r in enumerate(sorted(records, key = lambda r : (
+			zones.index(r["zone"]) if r.get("zone") else 0, # record is not within a zone managed by the box
+			domain_sort_order.index(r["qname"]),
+			r["rtype"]))):
+		r["sort-order"]["qname"] = i
+
+	# Return.
+	return json_response(records)
 
 @app.route('/dns/custom/<qname>', methods=['GET', 'POST', 'PUT', 'DELETE'])
 @app.route('/dns/custom/<qname>/<rtype>', methods=['GET', 'POST', 'PUT', 'DELETE'])
@@ -522,6 +571,8 @@ def system_status():
 	# Create a temporary pool of processes for the status checks
 	with multiprocessing.pool.Pool(processes=5) as pool:
 		run_checks(False, env, output, pool)
+		pool.close()
+		pool.join()
 	return json_response(output.items)
 
 @app.route('/system/updates')
@@ -605,16 +656,42 @@ def privacy_status_set():
 # MUNIN
 
 @app.route('/munin/')
-@app.route('/munin/<path:filename>')
 @authorized_personnel_only
-def munin(filename=""):
-	# Checks administrative access (@authorized_personnel_only) and then just proxies
-	# the request to static files.
+def munin_start():
+	# Munin pages, static images, and dynamically generated images are served
+	# outside of the AJAX API. We'll start with a 'start' API that sets a cookie
+	# that subsequent requests will read for authorization. (We don't use cookies
+	# for the API to avoid CSRF vulnerabilities.)
+	response = make_response("OK")
+	response.set_cookie("session", auth_service.create_session_key(request.user_email, env, type='cookie'),
+	    max_age=60*30, secure=True, httponly=True, samesite="Strict") # 30 minute duration
+	return response
+
+def check_request_cookie_for_admin_access():
+	session = auth_service.get_session(None, request.cookies.get("session", ""), "cookie", env)
+	if not session: return False
+	privs = get_mail_user_privileges(session["email"], env)
+	if not isinstance(privs, list): return False
+	if "admin" not in privs: return False
+	return True
+
+def authorized_personnel_only_via_cookie(f):
+	@wraps(f)
+	def g(*args, **kwargs):
+		if not check_request_cookie_for_admin_access():
+			return Response("Unauthorized", status=403, mimetype='text/plain', headers={})
+		return f(*args, **kwargs)
+	return g
+
+@app.route('/munin/<path:filename>')
+@authorized_personnel_only_via_cookie
+def munin_static_file(filename=""):
+	# Proxy the request to static files.
 	if filename == "": filename = "index.html"
 	return send_from_directory("/var/cache/munin/www", filename)
 
 @app.route('/munin/cgi-graph/<path:filename>')
-@authorized_personnel_only
+@authorized_personnel_only_via_cookie
 def munin_cgi(filename):
 	""" Relay munin cgi dynazoom requests
 	/usr/lib/munin/cgi/munin-cgi-graph is a perl cgi script in the munin package
@@ -632,7 +709,7 @@ def munin_cgi(filename):
 	support infrastructure like spawn-fcgi.
 	"""
 
-	COMMAND = 'su - munin --preserve-environment --shell=/bin/bash -c /usr/lib/munin/cgi/munin-cgi-graph'
+	COMMAND = 'su munin --preserve-environment --shell=/bin/bash -c /usr/lib/munin/cgi/munin-cgi-graph'
 	# su changes user, we use the munin user here
 	# --preserve-environment retains the environment, which is where Popen's `env` data is
 	# --shell=/bin/bash ensures the shell used is bash
@@ -691,30 +768,10 @@ if __name__ == '__main__':
 		# Turn on Flask debugging.
 		app.debug = True
 
-		# Use a stable-ish master API key so that login sessions don't restart on each run.
-		# Use /etc/machine-id to seed the key with a stable secret, but add something
-		# and hash it to prevent possibly exposing the machine id, using the time so that
-		# the key is not valid indefinitely.
-		import hashlib
-		with open("/etc/machine-id") as f:
-			api_key = f.read()
-		api_key += "|" + str(int(time.time() / (60*60*2)))
-		hasher = hashlib.sha1()
-		hasher.update(api_key.encode("ascii"))
-		auth_service.key = hasher.hexdigest()
-
-	if "APIKEY" in os.environ: auth_service.key = os.environ["APIKEY"]
-
 	if not app.debug:
 		app.logger.addHandler(utils.create_syslog_handler())
 
-	# For testing on the command line, you can use `curl` like so:
-	#    curl --user $(</var/lib/mailinabox/api.key): http://localhost:10222/mail/users
-	auth_service.write_key()
-
-	# For testing in the browser, you can copy the API key that's output to the
-	# debug console and enter that as the username
-	app.logger.info('API key: ' + auth_service.key)
+	#app.logger.info('API key: ' + auth_service.key)
 
 	# Start the application server. Listens on 127.0.0.1 (IPv4 only).
 	app.run(port=10222)

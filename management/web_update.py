@@ -9,7 +9,7 @@ from dns_update import get_custom_dns_config, get_dns_zones
 from ssl_certificates import get_ssl_certificates, get_domain_ssl_files, check_certificate
 from utils import shell, safe_domain_name, sort_domains
 
-def get_web_domains(env, include_www_redirects=True, exclude_dns_elsewhere=True):
+def get_web_domains(env, include_www_redirects=True, include_auto=True, exclude_dns_elsewhere=True):
 	# What domains should we serve HTTP(S) for?
 	domains = set()
 
@@ -18,20 +18,21 @@ def get_web_domains(env, include_www_redirects=True, exclude_dns_elsewhere=True)
 	# if the user wants to make one.
 	domains |= get_mail_domains(env)
 
-	if include_www_redirects:
+	if include_www_redirects and include_auto:
 		# Add 'www.' subdomains that we want to provide default redirects
 		# to the main domain for. We'll add 'www.' to any DNS zones, i.e.
 		# the topmost of each domain we serve.
 		domains |= set('www.' + zone for zone, zonefile in get_dns_zones(env))
 
-	# Add Autoconfiguration domains for domains that there are user accounts at:
-	# 'autoconfig.' for Mozilla Thunderbird auto setup.
-	# 'autodiscover.' for Activesync autodiscovery.
-	domains |= set('autoconfig.' + maildomain for maildomain in get_mail_domains(env, users_only=True))
-	domains |= set('autodiscover.' + maildomain for maildomain in get_mail_domains(env, users_only=True))
+	if include_auto:
+		# Add Autoconfiguration domains for domains that there are user accounts at:
+		# 'autoconfig.' for Mozilla Thunderbird auto setup.
+		# 'autodiscover.' for ActiveSync autodiscovery (Z-Push).
+		domains |= set('autoconfig.' + maildomain for maildomain in get_mail_domains(env, users_only=True))
+		domains |= set('autodiscover.' + maildomain for maildomain in get_mail_domains(env, users_only=True))
 
-	# 'mta-sts.' for MTA-STS support for all domains that have email addresses.
-	domains |= set('mta-sts.' + maildomain for maildomain in get_mail_domains(env))
+		# 'mta-sts.' for MTA-STS support for all domains that have email addresses.
+		domains |= set('mta-sts.' + maildomain for maildomain in get_mail_domains(env))
 
 	if exclude_dns_elsewhere:
 		# ...Unless the domain has an A/AAAA record that maps it to a different
@@ -62,7 +63,8 @@ def get_web_domains_with_root_overrides(env):
 	root_overrides = { }
 	nginx_conf_custom_fn = os.path.join(env["STORAGE_ROOT"], "www/custom.yaml")
 	if os.path.exists(nginx_conf_custom_fn):
-		custom_settings = rtyaml.load(open(nginx_conf_custom_fn))
+		with open(nginx_conf_custom_fn, 'r') as f:
+			custom_settings = rtyaml.load(f)
 		for domain, settings in custom_settings.items():
 			for type, value in [('redirect', settings.get('redirects', {}).get('/')),
 				('proxy', settings.get('proxies', {}).get('/'))]:
@@ -74,13 +76,18 @@ def do_web_update(env):
 	# Pre-load what SSL certificates we will use for each domain.
 	ssl_certificates = get_ssl_certificates(env)
 
+	# Helper for reading config files and templates
+	def read_conf(conf_fn):
+		with open(os.path.join(os.path.dirname(__file__), "../conf", conf_fn), "r") as f:
+			return f.read()
+
 	# Build an nginx configuration file.
-	nginx_conf = open(os.path.join(os.path.dirname(__file__), "../conf/nginx-top.conf")).read()
+	nginx_conf = read_conf("nginx-top.conf")
 
 	# Load the templates.
-	template0 = open(os.path.join(os.path.dirname(__file__), "../conf/nginx.conf")).read()
-	template1 = open(os.path.join(os.path.dirname(__file__), "../conf/nginx-alldomains.conf")).read()
-	template2 = open(os.path.join(os.path.dirname(__file__), "../conf/nginx-primaryonly.conf")).read()
+	template0 = read_conf("nginx.conf")
+	template1 = read_conf("nginx-alldomains.conf")
+	template2 = read_conf("nginx-primaryonly.conf")
 	template3 = "\trewrite ^(.*) https://$REDIRECT_DOMAIN$1 permanent;\n"
 
 	# Add the PRIMARY_HOST configuration first so it becomes nginx's default server.
@@ -140,11 +147,8 @@ def make_domain_config(domain, templates, ssl_certificates, env):
 	def hashfile(filepath):
 		import hashlib
 		sha1 = hashlib.sha1()
-		f = open(filepath, 'rb')
-		try:
+		with open(filepath, 'rb') as f:
 			sha1.update(f.read())
-		finally:
-			f.close()
 		return sha1.hexdigest()
 	nginx_conf_extra += "\t# ssl files sha1: %s / %s\n" % (hashfile(tls_cert["private-key"]), hashfile(tls_cert["certificate"]))
 
@@ -152,7 +156,8 @@ def make_domain_config(domain, templates, ssl_certificates, env):
 	hsts = "yes"
 	nginx_conf_custom_fn = os.path.join(env["STORAGE_ROOT"], "www/custom.yaml")
 	if os.path.exists(nginx_conf_custom_fn):
-		yaml = rtyaml.load(open(nginx_conf_custom_fn))
+		with open(nginx_conf_custom_fn, 'r') as f:
+			yaml = rtyaml.load(f)
 		if domain in yaml:
 			yaml = yaml[domain]
 
@@ -160,17 +165,27 @@ def make_domain_config(domain, templates, ssl_certificates, env):
 			for path, url in yaml.get("proxies", {}).items():
 				# Parse some flags in the fragment of the URL.
 				pass_http_host_header = False
+				proxy_redirect_off = False
+				frame_options_header_sameorigin = False
 				m = re.search("#(.*)$", url)
 				if m:
 					for flag in m.group(1).split(","):
 						if flag == "pass-http-host":
 							pass_http_host_header = True
+						elif flag == "no-proxy-redirect":
+							proxy_redirect_off = True
+						elif flag == "frame-options-sameorigin":
+							frame_options_header_sameorigin = True
 					url = re.sub("#(.*)$", "", url)
 
 				nginx_conf_extra += "\tlocation %s {" % path
 				nginx_conf_extra += "\n\t\tproxy_pass %s;" % url
+				if proxy_redirect_off:
+					nginx_conf_extra += "\n\t\tproxy_redirect off;"
 				if pass_http_host_header:
 					nginx_conf_extra += "\n\t\tproxy_set_header Host $http_host;"
+				if frame_options_header_sameorigin:
+					nginx_conf_extra += "\n\t\tproxy_set_header X-Frame-Options SAMEORIGIN;"
 				nginx_conf_extra += "\n\t\tproxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;"
 				nginx_conf_extra += "\n\t\tproxy_set_header X-Forwarded-Host $http_host;"
 				nginx_conf_extra += "\n\t\tproxy_set_header X-Forwarded-Proto $scheme;"
@@ -251,3 +266,4 @@ def get_web_domains_info(env):
 		}
 		for domain in get_web_domains(env)
 	]
+

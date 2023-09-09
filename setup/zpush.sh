@@ -17,33 +17,39 @@ source /etc/mailinabox.conf # load global vars
 
 echo "Installing Z-Push (Exchange/ActiveSync server)..."
 apt_install \
-	php-soap php-imap libawl-php php-xsl
+       php${PHP_VER}-soap php${PHP_VER}-imap libawl-php php$PHP_VER-xml
 
-phpenmod -v php imap
+phpenmod -v $PHP_VER imap
 
 # Copy Z-Push into place.
-VERSION=2.5.2
-TARGETHASH=2dc3dbd791b96b0ba2638df0d3d1e03c7e1cbab2
+VERSION=2.7.0
+TARGETHASH=a520bbdc1d637c5aac379611053457edd54f2bf0
 needs_update=0 #NODOC
 if [ ! -f /usr/local/lib/z-push/version ]; then
 	needs_update=1 #NODOC
-elif [[ $VERSION != `cat /usr/local/lib/z-push/version` ]]; then
+elif [[ $VERSION != $(cat /usr/local/lib/z-push/version) ]]; then
 	# checks if the version
 	needs_update=1 #NODOC
 fi
 if [ $needs_update == 1 ]; then
 	# Download
-	wget_verify "https://stash.z-hub.io/rest/api/latest/projects/ZP/repos/z-push/archive?at=refs%2Ftags%2F$VERSION&format=zip" $TARGETHASH /tmp/z-push.zip
+	wget_verify "https://github.com/Z-Hub/Z-Push/archive/refs/tags/$VERSION.zip" $TARGETHASH /tmp/z-push.zip
 
 	# Extract into place.
 	rm -rf /usr/local/lib/z-push /tmp/z-push
 	unzip -q /tmp/z-push.zip -d /tmp/z-push
-	mv /tmp/z-push/src /usr/local/lib/z-push
+	mv /tmp/z-push/*/src /usr/local/lib/z-push
 	rm -rf /tmp/z-push.zip /tmp/z-push
 
+	# Create admin and top scripts with PHP_VER  
 	rm -f /usr/sbin/z-push-{admin,top}
-	ln -s /usr/local/lib/z-push/z-push-admin.php /usr/sbin/z-push-admin
-	ln -s /usr/local/lib/z-push/z-push-top.php /usr/sbin/z-push-top
+    echo '#!/bin/bash' > /usr/sbin/z-push-admin
+    echo php$PHP_VER /usr/local/lib/z-push/z-push-admin.php '"$@"' >> /usr/sbin/z-push-admin
+    chmod 755 /usr/sbin/z-push-admin
+    echo '#!/bin/bash' > /usr/sbin/z-push-top
+    echo php$PHP_VER /usr/local/lib/z-push/z-push-top.php '"$@"' >> /usr/sbin/z-push-top
+    chmod 755 /usr/sbin/z-push-top
+	
 	echo $VERSION > /usr/local/lib/z-push/version
 fi
 
@@ -102,8 +108,8 @@ EOF
 
 # Restart service.
 
-restart_service php7.2-fpm
+restart_service php$PHP_VER-fpm
 
 # Fix states after upgrade
 
-hide_output z-push-admin -a fixstates
+hide_output php$PHP_VER /usr/local/lib/z-push/z-push-admin.php -a fixstates

@@ -1,7 +1,6 @@
 <h2>Users</h2>
 
 <style>
-#user_table h4 { margin: 1em 0 0 0; }
 #user_table tr.account_inactive td.address { color: #888; text-decoration: line-through; }
 #user_table .actions { margin-top: .33em; font-size: 95%; }
 #user_table .account_inactive .if_active { display: none; }
@@ -31,10 +30,10 @@
   <button type="submit" class="btn btn-primary">Add User</button>
 </form>
 <ul style="margin-top: 1em; padding-left: 1.5em; font-size: 90%;">
-  <li>Passwords must be at least eight characters consisting of English lettters and numbers only. For best results, <a href="#" onclick="return generate_random_password()">generate a random password</a>.</li>
-  <li>Use <a href="#" onclick="return show_panel('aliases')">aliases</a> to create email addresses that forward to existing accounts.</li>
+  <li>Passwords must be at least eight characters consisting of English letters and numbers only. For best results, <a href="#" onclick="return generate_random_password()">generate a random password</a>.</li>
+  <li>Use <a href="#aliases">aliases</a> to create email addresses that forward to existing accounts.</li>
   <li>Administrators get access to this control panel.</li>
-  <li>User accounts cannot contain any international (non-ASCII) characters, but <a href="#" onclick="return show_panel('aliases');">aliases</a> can.</li>
+  <li>User accounts cannot contain any international (non-ASCII) characters, but <a href="#aliases">aliases</a> can.</li>
 </ul>
 
 <h3>Existing mail users</h3>
@@ -134,8 +133,8 @@ function show_users() {
     function(r) {
       $('#user_table tbody').html("");
       for (var i = 0; i < r.length; i++) {
-        var hdr = $("<tr><td colspan='3'><h4/></td></tr>");
-        hdr.find('h4').text(r[i].domain);
+        var hdr = $("<tr><th colspan='2' style='background-color: #EEE'></th></tr>");
+        hdr.find('th').text(r[i].domain);
         $('#user_table tbody').append(hdr);
 
         for (var k = 0; k < r[i].users.length; k++) {
@@ -204,7 +203,7 @@ function users_set_password(elem) {
   var email = $(elem).parents('tr').attr('data-email');
 
   var yourpw = "";
-  if (api_credentials != null && email == api_credentials[0])
+  if (api_credentials != null && email == api_credentials.username)
     yourpw = "<p class='text-danger'>If you change your own password, you will be logged out of this control panel and will need to log in again.</p>";
 
   show_modal_confirm(
@@ -233,7 +232,7 @@ function users_remove(elem) {
   var email = $(elem).parents('tr').attr('data-email');
 
   // can't remove yourself
-  if (api_credentials != null && email == api_credentials[0]) {
+  if (api_credentials != null && email == api_credentials.username) {
     show_modal_error("Archive User", "You cannot archive your own account.");
     return;
   }
@@ -265,7 +264,7 @@ function mod_priv(elem, add_remove) {
   var priv = $(elem).parents('td').find('.name').text();
 
   // can't remove your own admin access
-  if (priv == "admin" && add_remove == "remove" && api_credentials != null && email == api_credentials[0]) {
+  if (priv == "admin" && add_remove == "remove" && api_credentials != null && email == api_credentials.username) {
     show_modal_error("Modify Privileges", "You cannot remove the admin privilege from yourself.");
     return;
   }
