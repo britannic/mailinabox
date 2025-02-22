@@ -1,6 +1,59 @@
 CHANGELOG
 =========
 
+Version 71 (January 4, 2025)
+----------------------------
+
+(Version 71a was posted on January 6, 2025 and fixes a setup regression.)
+
+Upgrades
+
+* Roundcube upgraded to version 1.6.9.
+* Z-Push upgraded to version 2.7.5.
+
+Automated Maintenance
+
+* Daily automated tasks are now run at 1am in the box's timezone and full backups are now restricted to running only on Saturdays and Sundays at that time.
+* Backups now exclude the owncloud-backup folder so that we're not backing up backups.
+* Old TLS certificates are now automatically deleted to improve control panel performance.
+
+Setup
+
+* Fixed broken setup if SSH was configured to listen on multiple ports.
+* Ubuntu MOTD advertisements are now disabled.
+* Fixed missing Roundcube dependency package if NextCloud isn't installed.
+
+Control Panel
+
+* Improved status checks for secondary nameservers.
+* Spamhaus is now queried for the box's IPv6 address also.
+* DSA and EC private keys are now accepted for TLS certificates.
+* Timeouts for loading slow control panel pages are reduced.
+
+And other minor fixes.
+
+Version 70 (August 15, 2024)
+----------------------------
+
+* Roundcube is updated to version 1.6.8 fixing security vulnerabilities.
+
+Version 69 (July 20, 2024)
+--------------------------
+
+Package updates:
+
+* Nextcloud is updated to 26.0.13.
+* Z-Push is updated to 2.7.3.
+
+Other updates:
+
+* Fixed an error generating the weekly statistics.
+* Fixed file permissions when setting up Nextcloud.
+* Added an undocumented option to proxy websockets.
+* Internal improvements to the code to make it more reliable and readable.
+
+Version 69a (July 21, 2024) and 69b (July 23, 2024) correct setup failures.
+
 Version 68 (April 1, 2024)
 --------------------------
 
@@ -24,7 +77,6 @@ Other:
 
 * fail2ban is updated to see "HTTP/2.0" requests to munin also.
 * Internal improvements to the code to make it more reliable and readable.
-
 
 Version 67 (December 22, 2023)
 ------------------------------
@@ -52,7 +104,7 @@ Version 64 (September 2, 2023)
 * Fixed backups to work with the latest duplicity package which was not backwards compatible.
 * Fixed setting B2 as a backup target with a slash in the application key.
 * Turned off OpenDMARC diagnostic reports sent in response to incoming mail.
-* Fixed some crashes when using an unrelased version of Mail-in-a-Box.
+* Fixed some crashes when using an unreleased version of Mail-in-a-Box.
 * Added z-push administration scripts.
 
 Version 63 (July 27, 2023)
@@ -188,7 +240,7 @@ Other:
 
 * Set systemd journald log retention to 10 days (from no limit) to reduce disk usage.
 * Fixed log processing for submission lines that have a sasl_sender or other extra information.
-* Fix DNS secondary nameserver refesh failure retry period.
+* Fix DNS secondary nameserver refresh failure retry period.
 
 Version 55 (October 18, 2021)
 -----------------------------
@@ -213,7 +265,7 @@ Control panel:
 Other:
 
 * Fail2ban's IPv6 support is enabled.
-* The mail log tool now doesn't crash if there are email addresess in log messages with invalid UTF-8 characters.
+* The mail log tool now doesn't crash if there are email addresses in log messages with invalid UTF-8 characters.
 * Additional nsd.conf files can be placed in /etc/nsd.conf.d.
 
 v0.54 (June 20, 2021)
@@ -246,7 +298,7 @@ Setup:
 v0.53a (May 8, 2021)
 --------------------
 
-The download URL for Z-Push has been revised becaue the old URL stopped working.
+The download URL for Z-Push has been revised because the old URL stopped working.
 
 v0.53 (April 12, 2021)
 ----------------------
@@ -465,7 +517,7 @@ Changes:
 * Added support for S3-compatible backup services besides Amazon S3.
 * Fixed the control panel login page to let LastPass save passwords.
 * Fixed an error in the user privileges API.
-* Silenced some spurrious messages.
+* Silenced some spurious messages.
 
 Software updates:
 
@@ -529,7 +581,7 @@ Setup:
 
 Control Panel:
 
-* The users page now documents that passwords should only have ASCII characters to prevent character encoding mismaches between clients and the server.
+* The users page now documents that passwords should only have ASCII characters to prevent character encoding mismatches between clients and the server.
 * The users page no longer shows user mailbox sizes because this was extremely slow for very large mailboxes.
 * The Mail-in-a-Box version is now shown in the system status checks even when the new-version check is disabled.
 * The alises page now warns that alises should not be used to forward mail off of the box. Mail filters within Roundcube are better for that.
@@ -857,7 +909,7 @@ v0.17c (April 1, 2016)
 
 This update addresses some minor security concerns and some installation issues.
 
-ownCoud:
+ownCloud:
 
 * Block web access to the configuration parameters (config.php). There is no immediate impact (see [#776](https://github.com/mail-in-a-box/mailinabox/pull/776)), although advanced users may want to take note.
 
@@ -873,7 +925,7 @@ Control panel:
 Setup:
 
 * Setup dialogs did not appear correctly when connecting to SSH using Putty on Windows.
-* We now install Roundcube from our own mirror because Sourceforge's downloads experience frequent intermittant unavailability.
+* We now install Roundcube from our own mirror because Sourceforge's downloads experience frequent intermittent unavailability.
 
 v0.17b (March 1, 2016)
 ----------------------
@@ -916,7 +968,7 @@ This update primarily adds automatic SSL (now "TLS") certificate provisioning fr
 
 Control Panel:
 
-* The SSL certificates (now referred to as "TLS ccertificates") page now supports provisioning free certificates from Let's Encrypt.
+* The SSL certificates (now referred to as "TLS certificates") page now supports provisioning free certificates from Let's Encrypt.
 * Report free memory usage.
 * Fix a crash when the git directory is not checked out to a tag.
 * When IPv6 is enabled, check that all domains (besides the system hostname) resolve over IPv6.
@@ -1009,7 +1061,7 @@ Control panel:
 System:
 
 * Tweaks to fail2ban settings.
-* Fixed a spurrious warning while installing munin.
+* Fixed a spurious warning while installing munin.
 
 v0.13b (August 30, 2015)
 ------------------------
@@ -1023,7 +1075,7 @@ Note: v0.13 (no 'a', August 19, 2015) was pulled immediately due to an ownCloud 
 
 Mail:
 
-* Outbound mail headers (the Recieved: header) are tweaked to possibly improve deliverability.
+* Outbound mail headers (the Received: header) are tweaked to possibly improve deliverability.
 * Some MIME messages would hang Roundcube due to a missing package.
 * The users permitted to send as an alias can now be different from where an alias forwards to.
 
@@ -1055,7 +1107,7 @@ v0.12c was posted to work around the current Sourceforge.net outage: pyzor's rem
 v0.12b (July 4, 2015)
 ---------------------
 
-This version corrects a minor regression in v0.12 related to creating aliases targetting multiple addresses.
+This version corrects a minor regression in v0.12 related to creating aliases targeting multiple addresses.
 
 v0.12 (July 3, 2015)
 --------------------
@@ -1108,7 +1160,7 @@ Control panel:
 
 System:
 * The munin system monitoring tool is now installed and accessible at /admin/munin.
-* ownCloud updated to version 8.0.4. The ownCloud installation step now is reslient to download problems. The ownCloud configuration file is now stored in STORAGE_ROOT to fix loss of data when moving STORAGE_ROOT to a new machine.
+* ownCloud updated to version 8.0.4. The ownCloud installation step now is resilient to download problems. The ownCloud configuration file is now stored in STORAGE_ROOT to fix loss of data when moving STORAGE_ROOT to a new machine.
 * The setup scripts now run `apt-get update` prior to installing anything to ensure the apt database is in sync with the packages actually available.
 
 
@@ -1146,7 +1198,7 @@ DNS:
 * Internationalized Domain Names (IDNs) should now work in email. If you had custom DNS or custom web settings for internationalized domains, check that they are still working.
 * It is now possible to set multiple TXT and other types of records on the same domain in the control panel.
 * The custom DNS API was completely rewritten to support setting multiple records of the same type on a domain. Any existing client code using the DNS API will have to be rewritten. (Existing code will just get 404s back.)
-* On some systems the `nsd` service failed to start if network inferfaces were not ready.
+* On some systems the `nsd` service failed to start if network interfaces were not ready.
 
 System / Control Panel:
 

@@ -172,7 +172,7 @@ def migration_12(env):
             conn.commit()
             conn.close()
 
-            # Delete all sessions, requring users to login again to recreate carddav_*
+            # Delete all sessions, requiring users to login again to recreate carddav_*
             # databases
             conn = sqlite3.connect(os.path.join(env["STORAGE_ROOT"], "mail/roundcube/roundcube.sqlite"))
             c = conn.cursor()
@@ -189,6 +189,12 @@ def migration_14(env):
 	# Add the "auto_aliases" table.
 	db = os.path.join(env["STORAGE_ROOT"], 'mail/users.sqlite')
 	shell("check_call", ["sqlite3", db, "CREATE TABLE auto_aliases (id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL UNIQUE, destination TEXT NOT NULL, permitted_senders TEXT);"])
+
+def migration_15(env):
+	# Add a column to the users table to store their quota limit.  Default to '0' for unlimited.
+	db = os.path.join(env["STORAGE_ROOT"], 'mail/users.sqlite')
+	shell("check_call", ["sqlite3", db, "ALTER TABLE users ADD COLUMN quota TEXT NOT NULL DEFAULT '0';"])
+
 
 ###########################################################
 

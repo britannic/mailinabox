@@ -54,7 +54,7 @@ hide_output $venv/bin/pip install --upgrade \
 # Create a backup directory and a random key for encrypting backups.
 mkdir -p "$STORAGE_ROOT/backup"
 if [ ! -f "$STORAGE_ROOT/backup/secret_key.txt" ]; then
-	umask 077; openssl rand -base64 2048 > "$STORAGE_ROOT/backup/secret_key.txt"
+	(umask 077; openssl rand -base64 2048 > "$STORAGE_ROOT/backup/secret_key.txt")
 fi
 
 
@@ -116,7 +116,7 @@ minute=$((RANDOM % 60))  # avoid overloading mailinabox.email
 cat > /etc/cron.d/mailinabox-nightly << EOF;
 # Mail-in-a-Box --- Do not edit / will be overwritten on update.
 # Run nightly tasks: backup, status checks.
-$minute 3 * * *	root	(cd $PWD && management/daily_tasks.sh)
+$minute 1 * * *	root	(cd $PWD && management/daily_tasks.sh)
 EOF
 
 # Start the management server.

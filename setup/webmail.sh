@@ -23,7 +23,7 @@ echo "Installing Roundcube (webmail)..."
 apt_install \
 	dbconfig-common \
 	php"${PHP_VER}"-cli php"${PHP_VER}"-sqlite3 php"${PHP_VER}"-intl php"${PHP_VER}"-common php"${PHP_VER}"-curl php"${PHP_VER}"-imap \
-	php"${PHP_VER}"-gd php"${PHP_VER}"-pspell php"${PHP_VER}"-mbstring libjs-jquery libjs-jquery-mousewheel libmagic1 \
+	php"${PHP_VER}"-gd php"${PHP_VER}"-pspell php"${PHP_VER}"-mbstring php"${PHP_VER}"-xml libjs-jquery libjs-jquery-mousewheel libmagic1 \
 	sqlite3
 
 # Install Roundcube from source if it is not already present or if it is out of date.
@@ -36,8 +36,8 @@ apt_install \
 #   https://github.com/mstilkerich/rcmcarddav/releases
 # The easiest way to get the package hashes is to run this script and get the hash from
 # the error message.
-VERSION=1.6.6
-HASH=7705d2736890c49e7ae3ac75e3ae00ba56187056
+VERSION=1.6.10
+HASH=0cfbb457e230793df8c56c2e6d3655cf3818f168
 PERSISTENT_LOGIN_VERSION=bde7b6840c7d91de627ea14e81cf4133cbb3c07a # version 5.3
 HTML5_NOTIFIER_VERSION=68d9ca194212e15b3c7225eb6085dbcf02fd13d7 # version 0.6.4+
 CARDDAV_VERSION=4.4.3
@@ -145,6 +145,7 @@ cat > $RCM_CONFIG <<EOF;
 \$config['session_path'] = '/mail/';
 /* prevent CSRF, requires php 7.3+ */
 \$config['session_samesite'] = 'Strict';
+\$config['quota_zero_as_unlimited'] = true;
 ?>
 EOF
 
