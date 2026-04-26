@@ -433,13 +433,20 @@ function show_panel(panelid) {
     panelid = panelid.getAttribute('href').substring(1);
   }
 
+  // Redirect to login if not authenticated and the requested panel is not the login panel.
+  if (api_credentials === null && panelid !== 'login') {
+    switch_back_to_panel = panelid;
+    panelid = 'login';
+  } else {
+    switch_back_to_panel = null;
+  }
+
   $('.admin_panel').hide();
   $('#panel_' + panelid).show();
   if (window["show_" + panelid])
     window["show_" + panelid]();
 
   current_panel = panelid;
-  switch_back_to_panel = null;
 }
 
 window.onhashchange = function() {

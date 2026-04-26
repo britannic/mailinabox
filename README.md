@@ -58,7 +58,7 @@ For experts, start with a completely fresh (really, I mean it) Ubuntu 22.04 LTS 
 
 Clone this repository and checkout the tag corresponding to the most recent release (which you can find in the tags or releases lists on GitHub):
 
-	$ git clone https://github.com/mail-in-a-box/mailinabox
+	$ git clone https://github.com/britannic/mailinabox
 	$ cd mailinabox
 	$ git checkout TAGNAME
 
