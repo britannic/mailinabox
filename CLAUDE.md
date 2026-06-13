@@ -8,19 +8,15 @@ Mail-in-a-Box is a self-hosted mail server appliance targeting Ubuntu 22.04 LTS.
 
 ## Development Environment
 
-Development uses Vagrant + VirtualBox. The VM is provisioned at `192.168.56.4` as `mailinabox.lan`:
+Install and upgrade instructions are at https://mailinabox.email/. Both use the same command on a fresh Ubuntu 22.04 server:
 
 ```bash
-vagrant up --provision          # initial setup or re-provision after changes
-vagrant ssh                     # shell into the VM
+curl -s https://mailinabox.email/setup.sh | sudo bash
 ```
 
-Add `192.168.56.4 mailinabox.lan` to `/etc/hosts` to reach the admin UI at `https://mailinabox.lan/admin`. Default credentials: `me@mailinabox.lan` / `12345678`.
-
-The repo is mounted inside the VM at `/vagrant`. Changes made locally appear in the VM immediately. To re-run a single setup component:
+To re-run a single setup component after making changes, SSH into the server and run the relevant script directly:
 
 ```bash
-# Inside the VM:
 sudo setup/mail-postfix.sh      # re-run just the postfix setup
 sudo setup/management.sh        # re-run just the management daemon setup
 ```
@@ -38,10 +34,9 @@ ruff format .                   # format
 
 ## Running the Management Daemon Locally
 
-The management daemon (`management/daemon.py`) is a Flask app that listens on port 10222. To run it during development on the VM:
+The management daemon (`management/daemon.py`) is a Flask app that listens on port 10222. To run it during development on the server:
 
 ```bash
-# Inside the VM:
 sudo service mailinabox stop
 sudo DEBUG=1 management/daemon.py
 sudo service mailinabox start   # when done
