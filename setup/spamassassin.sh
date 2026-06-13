@@ -213,12 +213,14 @@ plugin {
 }
 EOF
 
-# Compile the sieve scripts now that the plugins and extensions they require
-# (imapsieve, vnd.dovecot.pipe) are declared in the config above. sievec reads
-# the Dovecot configuration to discover available Sieve capabilities; compiling
-# before the config exists fails with "unknown Sieve capability".
-sievec /usr/lib/dovecot/sieve/report-spam.sieve
-sievec /usr/lib/dovecot/sieve/report-ham.sieve
+# Compile the sieve scripts. The standalone sievec compiler does NOT read
+# sieve_plugins/sieve_global_extensions from the Dovecot config (those only
+# apply to the imap_sieve runtime), so it must be told to load the plugins
+# (-P) and to enable the non-default extensions (-x) on the command line.
+# Without both, compilation fails with "unknown Sieve capability".
+sieve_ext="+imapsieve +vnd.dovecot.pipe +vnd.dovecot.environment"
+sievec -P sieve_imapsieve -P sieve_extprograms -x "$sieve_ext" /usr/lib/dovecot/sieve/report-spam.sieve
+sievec -P sieve_imapsieve -P sieve_extprograms -x "$sieve_ext" /usr/lib/dovecot/sieve/report-ham.sieve
 
 # Have Dovecot run its mail process with a supplementary group (the spampd group)
 # so that it can access the learning files.
