@@ -173,8 +173,6 @@ fi
 mkdir -p /usr/lib/dovecot/sieve
 cp -f conf/sieve-report-spam.sieve /usr/lib/dovecot/sieve/report-spam.sieve
 cp -f conf/sieve-report-ham.sieve /usr/lib/dovecot/sieve/report-ham.sieve
-sievec /usr/lib/dovecot/sieve/report-spam.sieve
-sievec /usr/lib/dovecot/sieve/report-ham.sieve
 
 cp -f conf/sa-learn-spam.sh /usr/lib/dovecot/sieve/sa-learn-spam.sh
 cp -f conf/sa-learn-ham.sh /usr/lib/dovecot/sieve/sa-learn-ham.sh
@@ -214,6 +212,13 @@ plugin {
   sieve_global_extensions = +vnd.dovecot.pipe +vnd.dovecot.environment
 }
 EOF
+
+# Compile the sieve scripts now that the plugins and extensions they require
+# (imapsieve, vnd.dovecot.pipe) are declared in the config above. sievec reads
+# the Dovecot configuration to discover available Sieve capabilities; compiling
+# before the config exists fails with "unknown Sieve capability".
+sievec /usr/lib/dovecot/sieve/report-spam.sieve
+sievec /usr/lib/dovecot/sieve/report-ham.sieve
 
 # Have Dovecot run its mail process with a supplementary group (the spampd group)
 # so that it can access the learning files.
