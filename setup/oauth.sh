@@ -53,7 +53,11 @@ store.get_server_secret()
 # root:root — the same idiom as the backup secret key in
 # setup/management.sh. Consumers strip the trailing newline.
 for secret_file in dovecot_client_secret.txt roundcube_client_secret.txt; do
-	if [ ! -f "$STORAGE_ROOT/auth/$secret_file" ]; then
+	# -s (not -f): regenerate when the file is missing OR empty, so a 0-byte
+	# file left by an interrupted prior run self-heals on re-run. A valid,
+	# non-empty secret is never clobbered (rotating it would break the
+	# already-configured Dovecot/Roundcube client).
+	if [ ! -s "$STORAGE_ROOT/auth/$secret_file" ]; then
 		(umask 077; python3 -c "import secrets; print(secrets.token_urlsafe(32))" > "$STORAGE_ROOT/auth/$secret_file")
 	fi
 done
