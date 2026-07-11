@@ -171,6 +171,15 @@ class MiabAuthorizationCodeGrant(grants.AuthorizationCodeGrant):
 			return None
 		if result["client_id"] != client.get_client_id():
 			return None
+		if result["code_challenge_method"] != "S256":
+			# Defense in depth: CodeChallenge(required=True) below defaults an
+			# absent method to "plain" and would otherwise fall back to a
+			# trivial verifier == challenge compare instead of a SHA-256 check.
+			# This grant's whole job is enforcing PKCE, so it must not trust
+			# that every stored code was created with method="S256" — the
+			# /oauth/authorize route also validates this at creation time, but
+			# this check must hold even if that one is ever bypassed.
+			raise InvalidGrantError
 		self._code = _AuthCode(result)
 		return self._code
 

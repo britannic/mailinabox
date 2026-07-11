@@ -348,9 +348,9 @@ PANEL_REDIRECT = "https://box.example.com/admin"
 RC_REDIRECT = "https://box.example.com/mail/index.php/login/oauth"
 
 
-def make_code(box, challenge, client_id="panel", email="alice@box.example.com", scopes="admin profile", redirect_uri=PANEL_REDIRECT):
+def make_code(box, challenge, client_id="panel", email="alice@box.example.com", scopes="admin profile", redirect_uri=PANEL_REDIRECT, method="S256"):
 	raw_code = secrets.token_urlsafe(32)
-	box.store.save_code(raw_code, client_id, email, scopes, redirect_uri, challenge, "S256", int(time.time()))
+	box.store.save_code(raw_code, client_id, email, scopes, redirect_uri, challenge, method, int(time.time()))
 	return raw_code
 
 
@@ -443,6 +443,26 @@ def test_code_replay_revokes_issued_tokens(box):
 	assert box.store.lookup_token(body["access_token"], "access")["revoked_at"] is not None
 	assert box.store.lookup_token(body["refresh_token"], "refresh")["revoked_at"] is not None
 	assert "/oauth/token" in box.deps.failed_logins
+
+
+def test_code_exchange_non_s256_method_rejected(box):
+	# PKCE downgrade guard: a stored code with code_challenge_method "plain" or
+	# missing/None must never be accepted, even though Authlib's CodeChallenge
+	# extension would otherwise default an absent method to "plain" and do a
+	# trivial verifier == challenge compare. The verifier used here is the
+	# genuine S256 verifier for the challenge, so this proves the method check
+	# rejects on the stored method alone, before any PKCE compare runs.
+	verifier, challenge = pkce_pair()
+	plain_code = make_code(box, challenge, method="plain")
+	r = exchange(box, plain_code, verifier)
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "invalid_grant"
+	assert "/oauth/token" in box.deps.failed_logins
+
+	none_code = make_code(box, challenge, method=None)
+	r2 = exchange(box, none_code, verifier)
+	assert r2.status_code == 400
+	assert r2.get_json()["error"] == "invalid_grant"
 
 
 def test_code_for_other_client_invalid_grant(box):
