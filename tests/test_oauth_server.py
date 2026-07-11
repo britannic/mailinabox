@@ -8,11 +8,12 @@
 # in tmp_path, user auth is faked through FakeDeps, and time.time is
 # monkeypatched so expiry behavior is tested with explicit timestamps.
 #
-# `re` and `urllib.parse` are unused by the Task 4 tests below; they are
-# imported here because Tasks 5-8 append authorization_code/PKCE/refresh
-# tests to this same file that need them.
+# `re` and `urllib.parse` were unused by the Task 4 tests below; they were
+# imported ahead of need because Tasks 5-8 append authorization_code/PKCE/
+# refresh/authorize tests to this same file that need them (Task 7's
+# authorize-flow tests are the first to actually use them).
 #
-# ruff: noqa: ARG001, ARG005, EM101, F401, PLR6201, S101, S105, S106, S107, TRY003
+# ruff: noqa: ARG001, ARG005, EM101, PLR6201, S101, S105, S106, S107, TRY003
 
 import base64
 import hashlib
@@ -570,3 +571,182 @@ def test_refresh_password_change_invalid_grant(box):
 	r = refresh(box, t.refresh)
 	assert r.status_code == 400
 	assert r.get_json()["error"] == "invalid_grant"
+
+
+# ---------------------------------------------------------------------------
+# Task 7: GET/POST /oauth/authorize + oauth-authorize.html
+# ---------------------------------------------------------------------------
+
+def authz_url(challenge, **overrides):
+	q = {"response_type": "code", "client_id": "panel", "redirect_uri": PANEL_REDIRECT, "scope": "admin profile", "state": "st123", "code_challenge": challenge, "code_challenge_method": "S256"}
+	q.update(overrides)
+	return "/oauth/authorize?" + urllib.parse.urlencode({k: v for k, v in q.items() if v is not None})
+
+
+def form_binding(html):
+	binding = re.search(r'name="binding" value="([0-9a-f]{64})"', html).group(1)
+	expires = re.search(r'name="binding_expires" value="(\d+)"', html).group(1)
+	return binding, expires
+
+
+def post_login(box, url, page_html, email="alice@box.example.com", password="swordfish", totp=None, binding=None):
+	b, exp = form_binding(page_html)
+	data = {"email": email, "password": password, "binding": binding if binding is not None else b, "binding_expires": exp}
+	if totp is not None:
+		data["totp_token"] = totp
+	return box.http.post(url, data=data)
+
+
+def test_authorize_get_renders_standalone_form(box):
+	_, challenge = pkce_pair()
+	r = box.http.get(authz_url(challenge))
+	assert r.status_code == 200
+	html = r.get_data(as_text=True)
+	assert 'name="email"' in html
+	assert 'name="password"' in html
+	assert 'name="totp_token"' not in html  # hidden until needed
+	assert re.search(r'name="binding" value="[0-9a-f]{64}"', html)
+	assert "box.example.com" in html
+	assert "<script" not in html  # no inline JS: CSP-proof by construction
+
+
+def test_authorize_unknown_client_400_never_redirects(box):
+	_, challenge = pkce_pair()
+	r = box.http.get(authz_url(challenge, client_id="evil"))
+	assert r.status_code == 400
+	assert "Location" not in r.headers
+	assert "client_id" in r.get_data(as_text=True)
+
+
+def test_authorize_bad_redirect_uri_400_never_redirects(box):
+	_, challenge = pkce_pair()
+	r = box.http.get(authz_url(challenge, redirect_uri="https://evil.example.com/"))
+	assert r.status_code == 400
+	assert "Location" not in r.headers
+
+
+def test_authorize_bad_response_type_redirects_error(box):
+	_, challenge = pkce_pair()
+	r = box.http.get(authz_url(challenge, response_type="token"))
+	assert r.status_code == 302
+	assert r.headers["Location"].startswith(PANEL_REDIRECT + "?")
+	q = urllib.parse.parse_qs(urllib.parse.urlparse(r.headers["Location"]).query)
+	assert q["error"] == ["unsupported_response_type"]
+	assert q["state"] == ["st123"]
+
+
+def test_authorize_scope_ceiling_per_client(box):
+	# panel may never request 'mail'.
+	_, challenge = pkce_pair()
+	r = box.http.get(authz_url(challenge, scope="mail"))
+	assert r.status_code == 302
+	assert "error=invalid_scope" in r.headers["Location"]
+
+
+def test_authorize_missing_code_challenge_rejected(box):
+	r = box.http.get(authz_url(None, code_challenge=None))
+	assert r.status_code == 302
+	assert "error=invalid_request" in r.headers["Location"]
+
+
+def test_authorize_plain_challenge_method_rejected(box):
+	_, challenge = pkce_pair()
+	r = box.http.get(authz_url(challenge, code_challenge_method="plain"))
+	assert r.status_code == 302
+	assert "error=invalid_request" in r.headers["Location"]
+
+
+def test_authorize_post_success_full_flow(box):
+	verifier, challenge = pkce_pair()
+	url = authz_url(challenge)
+	page = box.http.get(url).get_data(as_text=True)
+	r = post_login(box, url, page)
+	assert r.status_code == 302
+	loc = urllib.parse.urlparse(r.headers["Location"])
+	assert r.headers["Location"].startswith(PANEL_REDIRECT + "?")
+	q = urllib.parse.parse_qs(loc.query)
+	assert q["state"] == ["st123"]
+	code = q["code"][0]
+	# End-to-end: the issued code is exchangeable with PKCE (Task 6 grant).
+	tok = exchange(box, code, verifier)
+	assert tok.status_code == 200
+	assert tok.get_json()["scope"] == "admin profile"
+
+
+def test_authorize_post_wrong_password_rerenders_and_logs(box):
+	_, challenge = pkce_pair()
+	url = authz_url(challenge)
+	page = box.http.get(url).get_data(as_text=True)
+	r = post_login(box, url, page, password="nope")
+	assert r.status_code == 200
+	assert "Incorrect email address or password." in r.get_data(as_text=True)
+	assert box.deps.failed_logins == ["/oauth/authorize"]
+
+
+def test_authorize_totp_missing_rerenders_with_totp_field(box):
+	box.deps.add_user("bob@box.example.com", password="hunter2", totp="424242")
+	_, challenge = pkce_pair()
+	url = authz_url(challenge)
+	page = box.http.get(url).get_data(as_text=True)
+	r = post_login(box, url, page, email="bob@box.example.com", password="hunter2")
+	assert r.status_code == 200
+	html = r.get_data(as_text=True)
+	assert 'name="totp_token"' in html
+	assert 'value="bob@box.example.com"' in html  # email preserved
+	assert box.deps.failed_logins == []  # a missing TOTP step is not a failed login
+
+
+def test_authorize_totp_invalid_rerenders_with_error_and_logs(box):
+	box.deps.add_user("bob@box.example.com", password="hunter2", totp="424242")
+	_, challenge = pkce_pair()
+	url = authz_url(challenge)
+	page = box.http.get(url).get_data(as_text=True)
+	r = post_login(box, url, page, email="bob@box.example.com", password="hunter2", totp="000000")
+	assert r.status_code == 200
+	assert "Incorrect two factor authentication token." in r.get_data(as_text=True)
+	assert 'name="totp_token"' in r.get_data(as_text=True)
+	assert box.deps.failed_logins == ["/oauth/authorize"]
+
+
+def test_authorize_totp_success_two_step(box):
+	box.deps.add_user("bob@box.example.com", password="hunter2", totp="424242")
+	_, challenge = pkce_pair()
+	url = authz_url(challenge)
+	page = box.http.get(url).get_data(as_text=True)
+	step1 = post_login(box, url, page, email="bob@box.example.com", password="hunter2")
+	# The re-rendered form carries a fresh binding; submit it with the code.
+	step2 = post_login(box, url, step1.get_data(as_text=True), email="bob@box.example.com", password="hunter2", totp="424242")
+	assert step2.status_code == 302
+	assert "code=" in step2.headers["Location"]
+
+
+def test_authorize_binding_tamper_rejected(box):
+	_, challenge = pkce_pair()
+	url = authz_url(challenge)
+	page = box.http.get(url).get_data(as_text=True)
+	b, _ = form_binding(page)
+	tampered = ("0" if b[0] != "0" else "1") + b[1:]
+	r = post_login(box, url, page, binding=tampered)
+	assert r.status_code == 200
+	assert "expired" in r.get_data(as_text=True)
+	assert "code=" not in (r.headers.get("Location") or "")
+
+
+def test_authorize_binding_bound_to_exact_params(box):
+	# A binding minted for scope "admin profile" must not authorize a POST
+	# whose query string says scope "profile" (even though that alone would validate).
+	_, challenge = pkce_pair()
+	page = box.http.get(authz_url(challenge)).get_data(as_text=True)
+	r = post_login(box, authz_url(challenge, scope="profile"), page)
+	assert r.status_code == 200
+	assert "expired" in r.get_data(as_text=True)
+
+
+def test_authorize_binding_expiry(box):
+	_, challenge = pkce_pair()
+	url = authz_url(challenge)
+	page = box.http.get(url).get_data(as_text=True)
+	box.clock["now"] = float(TEST_NOW + oauth_server.AUTHZ_FORM_TTL + 1)
+	r = post_login(box, url, page)
+	assert r.status_code == 200
+	assert "expired" in r.get_data(as_text=True)

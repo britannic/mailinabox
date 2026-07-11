@@ -14,16 +14,19 @@
 # parent_id); token values are stored hashed, so rows identify sessions but
 # can never be replayed.
 
+import hashlib
 import hmac
 import json
 import os
+import secrets
 import time
+import urllib.parse
 
 from authlib.integrations.flask_oauth2 import AuthorizationServer
 from authlib.oauth2.rfc6749 import ClientMixin, grants
 from authlib.oauth2.rfc6749.errors import InvalidGrantError, InvalidRequestError, InvalidScopeError, UnauthorizedClientError
 from authlib.oauth2.rfc7636 import CodeChallenge
-from flask import Response, abort, jsonify, request
+from flask import Response, abort, jsonify, redirect, render_template, request
 
 import oauth_clients
 from oauth_store import OAuthStore, db_path
@@ -344,6 +347,34 @@ def _client_auth_from_request():
 	return request.form.get("client_id", ""), request.form.get("client_secret", "")
 
 
+_CLIENT_DISPLAY_NAMES = {"panel": "the Mail-in-a-Box control panel", "roundcube": "webmail"}
+
+
+def _authorize_request_params():
+	# The OAuth parameters are ALWAYS read from the query string — on POST the
+	# form action preserves it — and re-validated on every request; hidden form
+	# fields are never trusted for them.
+	return {
+		"client_id": request.args.get("client_id", ""),
+		"redirect_uri": request.args.get("redirect_uri", ""),
+		"response_type": request.args.get("response_type", ""),
+		"scope": request.args.get("scope", ""),
+		"state": request.args.get("state", ""),
+		"code_challenge": request.args.get("code_challenge", ""),
+		"code_challenge_method": request.args.get("code_challenge_method", ""),
+	}
+
+
+def _redirect_error(p, error_code):
+	# RFC 6749 §4.1.2.1 — only reached AFTER client_id and redirect_uri have
+	# been validated against the registry.
+	q = {"error": error_code}
+	if p["state"]:
+		q["state"] = p["state"]
+	sep = "&" if "?" in p["redirect_uri"] else "?"
+	return redirect(p["redirect_uri"] + sep + urllib.parse.urlencode(q))
+
+
 def init_oauth(app, env, deps):
 	# Registers all OAuth routes on the Flask app. `deps` is the plain object
 	# daemon.py constructs (Task 9): check_user_password, get_mail_password,
@@ -441,3 +472,77 @@ def init_oauth(app, env, deps):
 			else:
 				store.revoke_token(row["id"])
 		return Response("", 200)
+
+	def form_binding(p, binding_expires):
+		# Request-binding token: ties a rendered form to the exact authorization
+		# request it was rendered for, so a captured form POST cannot be replayed
+		# against a different client/redirect/scope/challenge.
+		message = "authz|" + p["client_id"] + "|" + p["redirect_uri"] + "|" + p["scope"] + "|" + p["state"] + "|" + p["code_challenge"] + "|" + str(binding_expires)
+		return hmac.new(store.get_server_secret(), message.encode(), hashlib.sha256).hexdigest()
+
+	def render_authorize_form(p, error=None, show_totp=False, email=""):
+		binding_expires = int(time.time()) + AUTHZ_FORM_TTL
+		return render_template("oauth-authorize.html", hostname=env["PRIMARY_HOSTNAME"], client_name=_CLIENT_DISPLAY_NAMES.get(p["client_id"], p["client_id"]), fatal_error=None, error=error, show_totp=show_totp, email=email, binding=form_binding(p, binding_expires), binding_expires=binding_expires)
+
+	def render_authorize_fatal(message):
+		# Invalid client_id/redirect_uri: a 400 HTML page, NEVER a redirect
+		# (redirecting would create an open redirector).
+		return render_template("oauth-authorize.html", hostname=env["PRIMARY_HOSTNAME"], client_name=None, fatal_error=message, error=None, show_totp=False, email="", binding="", binding_expires=0), 400
+
+	def validate_authorize_request(p):
+		# Returns None if the request is acceptable, else a complete response.
+		client = oauth_clients.get_client(env, p["client_id"])
+		if client is None or "authorization_code" not in client.grant_types:
+			return render_authorize_fatal("This sign-in request came from an unknown application (invalid client_id).")
+		if p["redirect_uri"] not in client.redirect_uris:
+			return render_authorize_fatal("This sign-in request has an invalid redirect URI.")
+		if p["response_type"] != "code":
+			return _redirect_error(p, "unsupported_response_type")
+		scopes = set(p["scope"].split())
+		if not scopes or not scopes <= client.allowed_scopes:
+			return _redirect_error(p, "invalid_scope")
+		if not p["code_challenge"] or p["code_challenge_method"] != "S256":
+			# PKCE S256 is mandatory for every code client, public or confidential.
+			return _redirect_error(p, "invalid_request")
+		return None
+
+	@app.route("/oauth/authorize", methods=["GET", "POST"])
+	def oauth_authorize():
+		p = _authorize_request_params()
+		error_response = validate_authorize_request(p)
+		if error_response is not None:
+			return error_response
+		if request.method == "GET":
+			return render_authorize_form(p)
+		# POST: the OAuth params were just re-validated from the query string;
+		# the binding proves this POST belongs to a form we rendered for exactly
+		# these parameters and that it is not stale.
+		try:
+			binding_expires = int(request.form.get("binding_expires", ""))
+		except ValueError:
+			binding_expires = 0
+		now = int(time.time())
+		if binding_expires <= now or not hmac.compare_digest(form_binding(p, binding_expires), request.form.get("binding", "")):
+			return render_authorize_form(p, error="This sign-in form has expired. Please try again.")
+		email = request.form.get("email", "").strip()
+		password = request.form.get("password", "")
+		totp_token = request.form.get("totp_token", "").strip() or None
+		if not email or not password or not deps.check_user_password(email, password):
+			deps.log_failed_login(request)
+			return render_authorize_form(p, error="Incorrect email address or password.", email=email)
+		mfa_status = deps.validate_mfa(email, totp_token)
+		if mfa_status == "missing-totp-token":
+			# Two-step UX like the existing login page: re-render with the TOTP
+			# field visible and the email preserved (the password is deliberately
+			# never echoed back into HTML and must be re-entered).
+			return render_authorize_form(p, show_totp=True, email=email)
+		if mfa_status == "invalid-totp-token":
+			deps.log_failed_login(request)
+			return render_authorize_form(p, error="Incorrect two factor authentication token.", show_totp=True, email=email)
+		raw_code = secrets.token_urlsafe(32)
+		store.save_code(raw_code, p["client_id"], email, p["scope"], p["redirect_uri"], p["code_challenge"], "S256", now)
+		q = {"code": raw_code}
+		if p["state"]:
+			q["state"] = p["state"]
+		sep = "&" if "?" in p["redirect_uri"] else "?"
+		return redirect(p["redirect_uri"] + sep + urllib.parse.urlencode(q))
