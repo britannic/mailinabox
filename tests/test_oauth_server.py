@@ -12,7 +12,7 @@
 # imported here because Tasks 5-8 append authorization_code/PKCE/refresh
 # tests to this same file that need them.
 #
-# ruff: noqa: ARG001, ARG005, EM101, F401, PLR6201, S101, S105, S107, TRY003
+# ruff: noqa: ARG001, ARG005, EM101, F401, PLR6201, S101, S105, S106, S107, TRY003
 
 import base64
 import hashlib
@@ -195,3 +195,146 @@ def test_internal_errors_return_json_server_error(box, monkeypatch):
 	assert r.content_type.startswith("application/json")
 	assert r.get_json() == {"error": "server_error"}
 	assert "Traceback" not in r.get_data(as_text=True)
+
+
+# ---------------------------------------------------------------------------
+# Task 5: POST /oauth/introspect and POST /oauth/revoke
+# ---------------------------------------------------------------------------
+
+def make_user_tokens(box, client_id="roundcube", email="alice@box.example.com", scopes="mail profile", auth_time=None, origin="origin-hash-1"):
+	# Builds a linked access+refresh pair directly in the store, the same way
+	# the code-exchange grant does (Task 6), so introspection/revocation can be
+	# tested independently of the grants.
+	now = int(time.time())
+	auth_time = auth_time if auth_time is not None else now
+	ps = box.store.password_state(box.deps.get_mail_password(email), box.deps.get_mfa_state_json(email))
+	access_raw, access_id = box.store.create_token("access", client_id, email, scopes, now + oauth_server.ACCESS_TOKEN_TTL, auth_time=auth_time, origin_code_hash=origin, password_state=ps)
+	refresh_raw, refresh_id = box.store.create_token("refresh", client_id, email, scopes, min(now + oauth_server.REFRESH_TOKEN_TTL, auth_time + oauth_server.CHAIN_LIFETIME_CAP), auth_time=auth_time, origin_code_hash=origin, password_state=ps)
+	return SimpleNamespace(access=access_raw, access_id=access_id, refresh=refresh_raw, refresh_id=refresh_id, origin=origin)
+
+
+def introspect(box, token, client_id="dovecot", secret="dovecot-secret-123", extra_headers=None, query=""):
+	headers = basic_auth(client_id, secret)
+	if extra_headers:
+		headers.update(extra_headers)
+	return box.http.post("/oauth/introspect" + query, data={"token": token}, headers=headers)
+
+
+def test_introspect_public_path_guard_404(box):
+	# nginx always sets X-Forwarded-For on proxied requests; its presence means
+	# the request came through the public path and must 404 before anything else.
+	t = make_user_tokens(box)
+	r = introspect(box, t.access, extra_headers={"X-Forwarded-For": "203.0.113.5"})
+	assert r.status_code == 404
+
+
+def test_introspect_active_token(box):
+	t = make_user_tokens(box)
+	r = introspect(box, t.access)
+	assert r.status_code == 200
+	assert r.get_json() == {"active": True, "username": "alice@box.example.com", "scope": "mail profile", "client_id": "roundcube", "exp": TEST_NOW + oauth_server.ACCESS_TOKEN_TTL, "token_type": "Bearer"}
+
+
+def test_introspect_wrong_secret_inactive_and_logged(box):
+	t = make_user_tokens(box)
+	r = introspect(box, t.access, secret="wrong")
+	assert r.status_code == 200
+	assert r.get_json() == {"active": False}
+	assert box.deps.failed_logins == ["/oauth/introspect"]
+
+
+def test_introspect_non_dovecot_client_inactive(box):
+	# Even a valid confidential client that is not 'dovecot' is refused.
+	t = make_user_tokens(box)
+	r = introspect(box, t.access, client_id="roundcube", secret="roundcube-secret-456")
+	assert r.status_code == 200
+	assert r.get_json() == {"active": False}
+
+
+def test_introspect_expired_token_inactive(box):
+	t = make_user_tokens(box)
+	box.clock["now"] = float(TEST_NOW + oauth_server.ACCESS_TOKEN_TTL + 1)
+	assert introspect(box, t.access).get_json() == {"active": False}
+
+
+def test_introspect_revoked_token_inactive(box):
+	t = make_user_tokens(box)
+	box.store.revoke_token(t.access_id)
+	assert introspect(box, t.access).get_json() == {"active": False}
+
+
+def test_introspect_token_without_mail_scope_inactive(box):
+	# A panel token (scopes: admin profile) can never log into IMAP.
+	t = make_user_tokens(box, client_id="panel", scopes="admin profile")
+	assert introspect(box, t.access).get_json() == {"active": False}
+
+
+def test_introspect_password_change_inactive(box):
+	t = make_user_tokens(box)
+	box.deps.users["alice@box.example.com"]["hash"] = "{SHA512-CRYPT}$6$salt$CHANGED"
+	assert introspect(box, t.access).get_json() == {"active": False}
+
+
+def test_introspect_missing_token_inactive(box):
+	assert introspect(box, "").get_json() == {"active": False}
+
+
+def test_introspect_credentials_in_query_inactive(box):
+	t = make_user_tokens(box)
+	r = box.http.post("/oauth/introspect?client_id=dovecot&client_secret=dovecot-secret-123", data={"token": t.access})
+	assert r.status_code == 200
+	assert r.get_json() == {"active": False}
+
+
+def test_revoke_refresh_token_revokes_family(box):
+	t = make_user_tokens(box)
+	r = box.http.post("/oauth/revoke", data={"token": t.refresh}, headers=basic_auth("roundcube", "roundcube-secret-456"))
+	assert r.status_code == 200
+	assert box.store.lookup_token(t.refresh, "refresh")["revoked_at"] is not None
+	assert box.store.lookup_token(t.access, "access")["revoked_at"] is not None
+
+
+def test_revoke_access_token_revokes_only_itself(box):
+	t = make_user_tokens(box)
+	r = box.http.post("/oauth/revoke", data={"token": t.access, "token_type_hint": "access_token"}, headers=basic_auth("roundcube", "roundcube-secret-456"))
+	assert r.status_code == 200
+	assert box.store.lookup_token(t.access, "access")["revoked_at"] is not None
+	assert box.store.lookup_token(t.refresh, "refresh")["revoked_at"] is None
+
+
+def test_revoke_public_panel_client_without_secret(box):
+	# The panel is a public client: it may revoke its own tokens (logout flow)
+	# authenticated by client_id alone.
+	t = make_user_tokens(box, client_id="panel", scopes="admin profile", origin="origin-panel-1")
+	r = box.http.post("/oauth/revoke", data={"token": t.refresh, "client_id": "panel"})
+	assert r.status_code == 200
+	assert box.store.lookup_token(t.refresh, "refresh")["revoked_at"] is not None
+	assert box.store.lookup_token(t.access, "access")["revoked_at"] is not None
+
+
+def test_revoke_other_clients_token_is_noop_200(box):
+	t = make_user_tokens(box, client_id="panel", scopes="admin profile")
+	r = box.http.post("/oauth/revoke", data={"token": t.refresh}, headers=basic_auth("roundcube", "roundcube-secret-456"))
+	assert r.status_code == 200
+	assert box.store.lookup_token(t.refresh, "refresh")["revoked_at"] is None
+
+
+def test_revoke_unknown_token_200(box):
+	r = box.http.post("/oauth/revoke", data={"token": "no-such-token"}, headers=basic_auth("roundcube", "roundcube-secret-456"))
+	assert r.status_code == 200
+
+
+def test_revoke_confidential_client_missing_secret_401(box):
+	t = make_user_tokens(box)
+	r = box.http.post("/oauth/revoke", data={"token": t.refresh, "client_id": "roundcube"})
+	assert r.status_code == 401
+	assert r.get_json()["error"] == "invalid_client"
+	assert box.deps.failed_logins == ["/oauth/revoke"]
+	assert box.store.lookup_token(t.refresh, "refresh")["revoked_at"] is None
+
+
+def test_revoke_credentials_in_query_rejected(box):
+	t = make_user_tokens(box)
+	r = box.http.post("/oauth/revoke?client_id=roundcube&client_secret=roundcube-secret-456", data={"token": t.refresh})
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "invalid_request"

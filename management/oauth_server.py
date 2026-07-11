@@ -14,6 +14,7 @@
 # parent_id); token values are stored hashed, so rows identify sessions but
 # can never be replayed.
 
+import hmac
 import json
 import os
 import time
@@ -21,7 +22,7 @@ import time
 from authlib.integrations.flask_oauth2 import AuthorizationServer
 from authlib.oauth2.rfc6749 import ClientMixin, grants
 from authlib.oauth2.rfc6749.errors import InvalidScopeError
-from flask import Response, request
+from flask import Response, abort, jsonify, request
 
 import oauth_clients
 from oauth_store import OAuthStore, db_path
@@ -127,6 +128,51 @@ def _oauth_error(error_code, status):
 	return Response(json.dumps({"error": error_code}), status=status, mimetype="application/json")
 
 
+def _check_access_token(env, raw_token, required_scope, deps):
+	# Shared access-token validity check (used by validate_bearer and the
+	# introspection endpoint). Returns the full store row, or None.
+	if not raw_token:
+		return None
+	store = current_store(env)
+	row = store.lookup_token(raw_token, "access")
+	if row is None:
+		return None
+	now = int(time.time())
+	if row["revoked_at"] is not None or row["expires_at"] <= now:
+		return None
+	if row["user_email"]:
+		# Password/MFA-state fingerprint: a password or MFA change through ANY
+		# writer (management API, Roundcube's direct-SQL password plugin)
+		# invalidates the user's tokens immediately.
+		stored_hash = deps.get_mail_password(row["user_email"])
+		if stored_hash is None:
+			return None
+		expected = store.password_state(stored_hash, deps.get_mfa_state_json(row["user_email"]))
+		if not hmac.compare_digest(expected, row["password_state"] or ""):
+			return None
+	if required_scope not in set((row["scopes"] or "").split()):
+		return None
+	return row
+
+
+def validate_bearer(env, raw_token, required_scope, deps):
+	# Public helper: access-token check shared by /oauth/userinfo and the
+	# auth.py Bearer middleware (Task 9).
+	row = _check_access_token(env, raw_token, required_scope, deps)
+	if row is None:
+		return None
+	return {"user_email": row["user_email"], "scopes": set(row["scopes"].split()), "client_id": row["client_id"]}
+
+
+def _client_auth_from_request():
+	# client_secret_basic or client_secret_post; query-string credentials are
+	# rejected by the callers before this runs.
+	auth = request.authorization
+	if auth is not None and auth.type == "basic":
+		return auth.username or "", auth.password or ""
+	return request.form.get("client_id", ""), request.form.get("client_secret", "")
+
+
 def init_oauth(app, env, deps):
 	# Registers all OAuth routes on the Flask app. `deps` is the plain object
 	# daemon.py constructs (Task 9): check_user_password, get_mail_password,
@@ -172,3 +218,53 @@ def init_oauth(app, env, deps):
 			if error in {"invalid_client", "invalid_grant"}:
 				deps.log_failed_login(request)
 		return response
+
+	@app.route("/oauth/introspect", methods=["POST"])
+	def oauth_introspect():
+		# Layer-2 isolation (layer 1 is nginx's `return 404`, Task 11): nginx
+		# always sets X-Forwarded-For on proxied requests; legitimate direct
+		# localhost callers (Dovecot) never send it. Checked FIRST.
+		if "X-Forwarded-For" in request.headers:
+			abort(404)
+		# All failure modes below return 200 {"active": false} with no detail.
+		if "client_id" in request.args or "client_secret" in request.args:
+			app.logger.info("Rejected /oauth/introspect request carrying client credentials in the query string")
+			return jsonify({"active": False})
+		client_id, client_secret = _client_auth_from_request()
+		dovecot = oauth_clients.get_client(env, "dovecot")
+		if client_id != "dovecot" or dovecot is None or not oauth_clients.verify_secret(dovecot, client_secret):
+			deps.log_failed_login(request)
+			return jsonify({"active": False})
+		row = _check_access_token(env, request.form.get("token", ""), SCOPE_MAIL, deps)
+		if row is None or row["user_email"] is None:
+			return jsonify({"active": False})
+		return jsonify({"active": True, "username": row["user_email"], "scope": row["scopes"], "client_id": row["client_id"], "exp": row["expires_at"], "token_type": "Bearer"})
+
+	@app.route("/oauth/revoke", methods=["POST"])
+	def oauth_revoke():
+		# RFC 7009. The public 'panel' client may revoke its own tokens with
+		# client_id alone (browser logout has no secret); confidential clients
+		# must authenticate. Unknown/foreign tokens still yield 200.
+		if "client_id" in request.args or "client_secret" in request.args:
+			app.logger.info("Rejected /oauth/revoke request carrying client credentials in the query string")
+			return _oauth_error("invalid_request", 400)
+		client_id, client_secret = _client_auth_from_request()
+		client = oauth_clients.get_client(env, client_id)
+		if client is None or (not client.is_public and not oauth_clients.verify_secret(client, client_secret)):
+			deps.log_failed_login(request)
+			return _oauth_error("invalid_client", 401)
+		raw = request.form.get("token", "")
+		hint = request.form.get("token_type_hint", "")
+		row = None
+		for token_type in (("access", "refresh") if hint == "access_token" else ("refresh", "access")):
+			row = store.lookup_token(raw, token_type)
+			if row is not None:
+				break
+		if row is not None and row["client_id"] == client_id and row["revoked_at"] is None:
+			kind = row["token_type"]
+			if kind == "refresh" and row["origin_code_hash"]:
+				# Revoking a refresh token revokes its whole family.
+				store.revoke_family_by_origin(row["origin_code_hash"])
+			else:
+				store.revoke_token(row["id"])
+		return Response("", 200)
