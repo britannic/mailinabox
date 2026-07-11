@@ -56,19 +56,19 @@ class OAuthStore:
 		self.conn.row_factory = sqlite3.Row
 		os.chmod(path, 0o600)
 		self._lock = threading.Lock()
-		self.conn.executescript(_SCHEMA)
+		with self._lock:
+			self.conn.executescript(_SCHEMA)
 
 	def get_server_secret(self):
 		# A stable secret that persists across daemon restarts (unlike the
 		# api.key), used to key password-state fingerprints and the authorize
 		# form binding token. Created on first use.
-		with self._lock:
-			row = self.conn.execute("SELECT value FROM oauth_config WHERE key = 'server_secret'").fetchone()
-			if row is None:
-				# INSERT OR IGNORE + re-read so two racing processes agree on one value.
-				self.conn.execute("INSERT OR IGNORE INTO oauth_config (key, value) VALUES ('server_secret', ?)", (secrets.token_hex(32),))
-				row = self.conn.execute("SELECT value FROM oauth_config WHERE key = 'server_secret'").fetchone()
-			return bytes.fromhex(row["value"])
+		row = self._execute_one("SELECT value FROM oauth_config WHERE key = 'server_secret'")
+		if row is None:
+			# INSERT OR IGNORE + re-read so two racing processes agree on one value.
+			self._write("INSERT OR IGNORE INTO oauth_config (key, value) VALUES ('server_secret', ?)", (secrets.token_hex(32),))
+			row = self._execute_one("SELECT value FROM oauth_config WHERE key = 'server_secret'")
+		return bytes.fromhex(row["value"])
 
 	@staticmethod
 	def hash_token(raw):
@@ -101,26 +101,25 @@ class OAuthStore:
 		# or None if the code is unknown or expired.
 		now = _now(now)
 		code_hash = self.hash_token(raw_code)
-		with self._lock:
-			row = self.conn.execute("SELECT * FROM oauth_codes WHERE code_hash = ?", (code_hash,)).fetchone()
-			if row is None:
-				return None
-			if row["used_at"] is not None:
-				return {"replayed": True, "code_hash": code_hash}
-			if row["expires_at"] <= now:
-				return None
-			# Claim the code atomically: a single guarded UPDATE is the only writer,
-			# so two concurrent redemptions cannot both succeed (the loser sees
-			# used_at already set and reports a replay, which the server treats as
-			# an attack signal and revokes the winner's tokens — RFC-correct).
-			cur = self.conn.execute("UPDATE oauth_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?", (now, code_hash, now))
-			if cur.rowcount == 1:
-				return dict(row)
-			# UPDATE failed; check if the code was already used by another thread.
-			row2 = self.conn.execute("SELECT used_at FROM oauth_codes WHERE code_hash = ?", (code_hash,)).fetchone()
-			if row2 is not None and row2[0] is not None:
-				return {"replayed": True, "code_hash": code_hash}
+		row = self._execute_one("SELECT * FROM oauth_codes WHERE code_hash = ?", (code_hash,))
+		if row is None:
 			return None
+		if row["used_at"] is not None:
+			return {"replayed": True, "code_hash": code_hash}
+		if row["expires_at"] <= now:
+			return None
+		# Claim the code atomically: a single guarded UPDATE is the only writer,
+		# so two concurrent redemptions cannot both succeed (the loser sees
+		# used_at already set and reports a replay, which the server treats as
+		# an attack signal and revokes the winner's tokens — RFC-correct).
+		rowcount, _ = self._write("UPDATE oauth_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?", (now, code_hash, now))
+		if rowcount == 1:
+			return dict(row)
+		# UPDATE failed; check if the code was already used by another thread.
+		row2 = self._execute_one("SELECT used_at FROM oauth_codes WHERE code_hash = ?", (code_hash,))
+		if row2 is not None and row2[0] is not None:
+			return {"replayed": True, "code_hash": code_hash}
+		return None
 
 	# --- tokens ---
 

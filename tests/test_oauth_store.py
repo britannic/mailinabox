@@ -271,4 +271,4 @@ def test_concurrent_take_code_single_winner(store):
 	# All others should either be None (expired) or the replay sentinel
 	for r in results:
 		if r is not None:
-			assert "replayed" in r or "code_hash" not in r or r == successes[0]
+			assert r.get("replayed") is True or r == successes[0]
