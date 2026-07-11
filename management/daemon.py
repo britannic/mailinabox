@@ -17,7 +17,7 @@ from functools import wraps
 
 from flask import Flask, request, render_template, Response, send_from_directory, make_response
 
-import auth, utils
+import auth, oauth_server, utils
 from mailconfig import get_mail_users, get_mail_users_ex, get_admins, add_mail_user, set_mail_password, remove_mail_user
 from mailconfig import get_mail_user_privileges, add_remove_mail_user_privilege
 from mailconfig import get_mail_aliases, get_mail_aliases_ex, get_mail_domains, add_mail_alias, remove_mail_alias
@@ -78,9 +78,11 @@ def authorized_personnel_only(viewfunc):
 			error = "You are not an administrator."
 
 		# Not authorized. Return a 401 (send auth) and a prompt to authorize by default.
+		# Bearer is the primary scheme; Basic remains advertised while legacy Basic auth
+		# is enabled (it is by default).
 		status = 401
 		headers = {
-			'WWW-Authenticate': f'Basic realm="{auth_service.auth_realm}"',
+			'WWW-Authenticate': f'Bearer realm="{auth_service.auth_realm}", Basic realm="{auth_service.auth_realm}"',
 			'X-Reason': error,
 		}
 
@@ -103,7 +105,7 @@ def authorized_personnel_only(viewfunc):
 
 @app.errorhandler(401)
 def unauthorized(error):
-	return auth_service.make_unauthorized_response()
+	return auth_service.make_unauthorized_response(env)
 
 def json_response(data, status=200):
 	return Response(json.dumps(data, indent=2, sort_keys=True)+'\n', status=status, mimetype='application/json')
@@ -771,6 +773,25 @@ def log_failed_login(request):
 	# We need to add a timestamp to the log message, otherwise /dev/log will eat the "duplicate"
 	# message.
 	app.logger.warning("Mail-in-a-Box Management Daemon: Failed login attempt from ip %s - timestamp %s", ip, time.time())
+
+
+# OAUTH2 AUTHORIZATION SERVER
+
+# Register the OAuth 2.0 endpoints (management/oauth_server.py). This lives after
+# log_failed_login's definition because the deps object carries a reference to it
+# (deps.log_failed_login is THE fail2ban-matched logging function, passed through).
+# Note: the OAuth layer itself is stateless per-request (sqlite-backed) and does
+# NOT require gunicorn's single-worker mode — only the legacy in-memory session
+# store in auth.py does. If sessions are ever retired, workers can scale.
+oauth_server.init_oauth(app, env, auth_service.deps(env, log_failed_login=log_failed_login))
+
+# Revoke any outstanding 'system' client-credentials tokens from before this restart
+# so that api.key rotation on restart keeps its instant-invalidation guarantee
+# (design spec section 6.2). Never let this crash daemon startup.
+try:
+	oauth_server.current_store(env).revoke_client_tokens("system")
+except Exception as e:
+	app.logger.warning("Could not revoke outstanding system-client OAuth tokens at startup: %s", e)
 
 
 # APP
