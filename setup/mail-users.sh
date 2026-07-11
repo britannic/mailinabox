@@ -75,8 +75,18 @@ chmod 0600 /etc/dovecot/dovecot-sql.conf.ext # per Dovecot instructions
 # secret is token_urlsafe (A-Za-z0-9_-), so it needs no URL escaping.
 # Dovecot reads this file as root at startup, same model as
 # dovecot-sql.conf.ext above, so 0600 root-owned is sufficient.
+# Fail loudly if the dovecot client secret is missing/empty rather than
+# silently writing "dovecot:@..." (which would make every XOAUTH2 login fail
+# against a live daemon with no diagnostic). setup/oauth.sh provisions this
+# file earlier in setup/start.sh's source order.
+if [ ! -s "$STORAGE_ROOT/auth/dovecot_client_secret.txt" ]; then
+	echo "ERROR: $STORAGE_ROOT/auth/dovecot_client_secret.txt is missing or empty; run setup/oauth.sh first." 1>&2
+	exit 1
+fi
 DOVECOT_OAUTH_SECRET=$(cat "$STORAGE_ROOT/auth/dovecot_client_secret.txt")
-cat > /etc/dovecot/dovecot-oauth2.conf.ext << EOF;
+# umask 077 in a subshell so the file is created 0600 from the start (it holds
+# a live secret) — no world-readable window before the chmod below.
+(umask 077; cat > /etc/dovecot/dovecot-oauth2.conf.ext << EOF
 introspection_mode = post
 introspection_url = http://dovecot:$DOVECOT_OAUTH_SECRET@127.0.0.1:10222/oauth/introspect
 username_attribute = username
@@ -84,6 +94,7 @@ active_attribute = active
 active_value = true
 scope = mail
 EOF
+)
 chmod 0600 /etc/dovecot/dovecot-oauth2.conf.ext
 
 # Have Dovecot provide an authorization service that Postfix can access & use.
