@@ -102,6 +102,15 @@ fi
 # for the cipher algorithm selected below.
 SECRET_KEY=$(dd if=/dev/urandom bs=1 count=32 2>/dev/null | base64 | sed s/=//g)
 
+# Read the OAuth client secret provisioned by setup/oauth.sh and escape it
+# for inclusion in a single-quoted PHP string literal: escape backslash
+# first, then single quote (the only two characters with meaning inside
+# PHP single quotes). The secret is secrets.token_urlsafe output
+# (A-Za-z0-9_-), so this is belt-and-braces, but it keeps the config
+# generation correct even if the secret file is ever hand-replaced.
+RCM_OAUTH_SECRET=$(cat "$STORAGE_ROOT/auth/roundcube_client_secret.txt")
+RCM_OAUTH_SECRET_PHP=$(printf '%s' "$RCM_OAUTH_SECRET" | sed -e 's/\\/\\\\/g' -e "s/'/\\\\'/g")
+
 # Create a configuration file.
 #
 # For security, temp and log files are not stored in the default locations
@@ -146,8 +155,26 @@ cat > $RCM_CONFIG <<EOF;
 /* prevent CSRF, requires php 7.3+ */
 \$config['session_samesite'] = 'Strict';
 \$config['quota_zero_as_unlimited'] = true;
+/* Sign in with SSO: OAuth 2.0 against the box's own authorization server
+   (the management daemon). The password login form remains the default;
+   SSO is offered as a button (oauth_login_redirect = false). */
+\$config['oauth_provider'] = 'generic';
+\$config['oauth_provider_name'] = 'Mail-in-a-Box';
+\$config['oauth_client_id'] = 'roundcube';
+\$config['oauth_client_secret'] = '$RCM_OAUTH_SECRET_PHP';
+\$config['oauth_auth_uri'] = 'https://$PRIMARY_HOSTNAME/admin/oauth/authorize';
+\$config['oauth_token_uri'] = 'https://$PRIMARY_HOSTNAME/admin/oauth/token';
+\$config['oauth_identity_uri'] = 'https://$PRIMARY_HOSTNAME/admin/oauth/userinfo';
+\$config['oauth_identity_fields'] = ['email'];
+\$config['oauth_scope'] = 'mail profile';
+\$config['oauth_login_redirect'] = false;
 ?>
 EOF
+
+# The config now contains the OAuth client secret (and the des_key);
+# make it readable by root and the PHP-FPM user only.
+chown root:www-data $RCM_CONFIG
+chmod 640 $RCM_CONFIG
 
 # Configure CardDav
 cat > ${RCM_PLUGIN_DIR}/carddav/config.inc.php <<EOF;
