@@ -27,7 +27,7 @@ import urllib.parse
 from types import SimpleNamespace
 
 import pytest
-from flask import Flask
+from flask import Flask, request
 from flask.testing import FlaskClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "management"))
@@ -140,7 +140,7 @@ def box(tmp_path, monkeypatch, clock):
 	app.test_client_class = HttpsTestClient
 	oauth_server.init_oauth(app, env, deps)
 
-	return SimpleNamespace(http=app.test_client(), env=env, deps=deps, store=oauth_server.current_store(env), clock=clock, clients=clients)
+	return SimpleNamespace(http=app.test_client(), app=app, env=env, deps=deps, store=oauth_server.current_store(env), clock=clock, clients=clients)
 
 
 # ---------------------------------------------------------------------------
@@ -831,8 +831,27 @@ def test_metadata_document(box):
 		"response_types_supported": ["code"],
 		"grant_types_supported": ["authorization_code", "refresh_token", "client_credentials"],
 		"code_challenge_methods_supported": ["S256"],
-		"token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+		"token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"],
 	}
+
+
+def test_client_credentials_over_plain_loopback_http(box):
+	# Regression for the whole-branch-review critical finding: the local root
+	# tooling (cli.py, tools/dns_update, tools/web_update) POSTs client_credentials
+	# directly to http://127.0.0.1:10222/oauth/token — plain http, bypassing nginx,
+	# with no X-Forwarded-Proto. daemon.py's apply_forwarded_proto treats such a
+	# no-proxy-header loopback request as secure so Authlib does not reject it with
+	# insecure_transport (which would abort setup/start.sh). This test reproduces
+	# that hook on the test app and drives the grant over a plain-http base_url.
+	@box.app.before_request
+	def _loopback_is_secure():
+		if "X-Forwarded-Proto" not in request.headers and "X-Forwarded-For" not in request.headers:
+			request.environ["wsgi.url_scheme"] = "https"
+
+	plain = box.app.test_client()  # default http base_url, no HttpsTestClient
+	r = plain.post("http://127.0.0.1/oauth/token", data={"grant_type": "client_credentials", "scope": "admin"}, headers=basic_auth("system", "system-secret-789"))
+	assert r.status_code == 200, r.get_data(as_text=True)
+	assert r.get_json()["access_token"]
 
 
 def test_validate_bearer_returns_info(box):

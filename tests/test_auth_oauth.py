@@ -335,6 +335,19 @@ def run_root_tests():
 	status, _hdrs, _body = http("GET", f"https://{host}/admin/mail/users?format=json", bearer=tok["access_token"])
 	expect(status == 200, "system-client access token reaches the admin API")
 
+	# R1b. Regression (whole-branch review critical): the local root tooling
+	# (cli.py, tools/dns_update, tools/web_update) reaches the token endpoint
+	# DIRECTLY on 127.0.0.1:10222 over plain http, bypassing nginx and its
+	# X-Forwarded-Proto header. The daemon must treat this no-proxy-header loopback
+	# request as a secure transport so Authlib does not reject the grant with
+	# insecure_transport (which would abort setup/start.sh and break every install).
+	status, _hdrs, body = http("POST", "http://127.0.0.1:10222/oauth/token", {"grant_type": "client_credentials", "client_id": "system", "client_secret": api_key, "scope": "admin"})
+	try:
+		direct = json.loads(body)
+	except ValueError:
+		direct = {}
+	expect(status == 200 and "access_token" in direct, "client_credentials over the direct http://127.0.0.1:10222 loopback path (the tooling path) issues a token")
+
 	# R2. A wrong system secret fails with a plain RFC 6749 error.
 	status, resp = token_post({"grant_type": "client_credentials", "client_id": "system", "client_secret": "0" * 32})
 	expect(status in (400, 401) and resp.get("error") == "invalid_client", "a wrong system client secret fails with invalid_client")

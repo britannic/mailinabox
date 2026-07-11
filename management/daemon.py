@@ -63,6 +63,14 @@ def apply_forwarded_proto():
 	proto = request.headers.get("X-Forwarded-Proto")
 	if proto:
 		request.environ["wsgi.url_scheme"] = proto
+	elif "X-Forwarded-For" not in request.headers and request.remote_addr in {"127.0.0.1", "::1"}:
+		# A direct caller on the loopback interface (the daemon binds 127.0.0.1
+		# only) with no proxy headers is the local root tooling — cli.py,
+		# tools/dns_update, tools/web_update — hitting /oauth/token directly to
+		# exchange the api.key for a bearer token. The loopback interface is not
+		# sniffable, so treat it as a secure transport; otherwise Authlib rejects
+		# the client_credentials grant with insecure_transport and setup aborts.
+		request.environ["wsgi.url_scheme"] = "https"
 
 @app.context_processor
 def inject_csp_nonce():

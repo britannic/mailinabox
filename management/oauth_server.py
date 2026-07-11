@@ -546,6 +546,9 @@ def init_oauth(app, env, deps):
 
 	@app.route("/oauth/userinfo", methods=["GET"])
 	def oauth_userinfo():
+		# Note: a bad/absent token here is deliberately NOT sent to log_failed_login.
+		# Access tokens are unguessable 256-bit opaque values, so this is not a
+		# credential-guessing surface — feeding fail2ban would only add log noise.
 		header = request.headers.get("Authorization", "")
 		if not header.startswith("Bearer "):
 			return Response("", 401, {"WWW-Authenticate": "Bearer"})
@@ -570,5 +573,5 @@ def init_oauth(app, env, deps):
 			"response_types_supported": ["code"],
 			"grant_types_supported": ["authorization_code", "refresh_token", "client_credentials"],
 			"code_challenge_methods_supported": ["S256"],
-			"token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+			"token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"],
 		})
