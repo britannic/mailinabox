@@ -108,6 +108,13 @@ SECRET_KEY=$(dd if=/dev/urandom bs=1 count=32 2>/dev/null | base64 | sed s/=//g)
 # PHP single quotes). The secret is secrets.token_urlsafe output
 # (A-Za-z0-9_-), so this is belt-and-braces, but it keeps the config
 # generation correct even if the secret file is ever hand-replaced.
+# Fail loudly if the secret is missing/empty rather than writing an empty
+# oauth_client_secret (which would break SSO with no diagnostic). setup/oauth.sh
+# provisions this file earlier in setup/start.sh's source order.
+if [ ! -s "$STORAGE_ROOT/auth/roundcube_client_secret.txt" ]; then
+	echo "ERROR: $STORAGE_ROOT/auth/roundcube_client_secret.txt is missing or empty; run setup/oauth.sh first." 1>&2
+	exit 1
+fi
 RCM_OAUTH_SECRET=$(cat "$STORAGE_ROOT/auth/roundcube_client_secret.txt")
 RCM_OAUTH_SECRET_PHP=$(printf '%s' "$RCM_OAUTH_SECRET" | sed -e 's/\\/\\\\/g' -e "s/'/\\\\'/g")
 
@@ -175,6 +182,9 @@ EOF
 # make it readable by root and the PHP-FPM user only.
 chown root:www-data $RCM_CONFIG
 chmod 640 $RCM_CONFIG
+
+# The secret is now in the (0640) config; drop it from the shell environment.
+unset RCM_OAUTH_SECRET RCM_OAUTH_SECRET_PHP
 
 # Configure CardDav
 cat > ${RCM_PLUGIN_DIR}/carddav/config.inc.php <<EOF;
