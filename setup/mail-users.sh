@@ -33,11 +33,20 @@ sed -i "s/#*\(\!include auth-system.conf.ext\)/#\1/"  /etc/dovecot/conf.d/10-aut
 sed -i "s/#\(\!include auth-sql.conf.ext\)/\1/"  /etc/dovecot/conf.d/10-auth.conf
 
 # Specify how the database is to be queried for user authentication (passdb)
-# and where user mailboxes are stored (userdb).
+# and where user mailboxes are stored (userdb). The sql passdb serves the
+# PLAIN/LOGIN password mechanisms; the oauth2 passdb handles only the
+# XOAUTH2/OAUTHBEARER token mechanisms (per-passdb 'mechanisms' filter) by
+# introspecting tokens against the management daemon. The single sql userdb
+# supplies home/uid/quota for both authentication paths.
 cat > /etc/dovecot/conf.d/auth-sql.conf.ext << EOF;
 passdb {
   driver = sql
   args = /etc/dovecot/dovecot-sql.conf.ext
+}
+passdb {
+  driver = oauth2
+  mechanisms = xoauth2 oauthbearer
+  args = /etc/dovecot/dovecot-oauth2.conf.ext
 }
 userdb {
   driver = sql
@@ -55,6 +64,27 @@ user_query = SELECT email AS user, "mail" as uid, "mail" as gid, "$STORAGE_ROOT/
 iterate_query = SELECT email AS user FROM users;
 EOF
 chmod 0600 /etc/dovecot/dovecot-sql.conf.ext # per Dovecot instructions
+
+# Configure OAuth2 token validation for the XOAUTH2/OAUTHBEARER mechanisms.
+# Dovecot POSTs the presented access token to the management daemon's
+# RFC 7662 introspection endpoint, authenticating with the dedicated
+# 'dovecot' client credential provisioned by setup/oauth.sh. The secret is
+# placed in the URL userinfo portion, which Dovecot sends as an HTTP Basic
+# Authorization header — never as a query parameter (the daemon rejects
+# query-string credentials, and query strings leak into error logs). The
+# secret is token_urlsafe (A-Za-z0-9_-), so it needs no URL escaping.
+# Dovecot reads this file as root at startup, same model as
+# dovecot-sql.conf.ext above, so 0600 root-owned is sufficient.
+DOVECOT_OAUTH_SECRET=$(cat "$STORAGE_ROOT/auth/dovecot_client_secret.txt")
+cat > /etc/dovecot/dovecot-oauth2.conf.ext << EOF;
+introspection_mode = post
+introspection_url = http://dovecot:$DOVECOT_OAUTH_SECRET@127.0.0.1:10222/oauth/introspect
+username_attribute = username
+active_attribute = active
+active_value = true
+scope = mail
+EOF
+chmod 0600 /etc/dovecot/dovecot-oauth2.conf.ext
 
 # Have Dovecot provide an authorization service that Postfix can access & use.
 cat > /etc/dovecot/conf.d/99-local-auth.conf << EOF;
