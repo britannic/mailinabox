@@ -359,6 +359,11 @@ def run_root_tests():
 	expect(status == 200 and json.loads(body) == {"active": False}, "introspection returns exactly {'active': false} for a bad token")
 	status, _hdrs, body = http("POST", "http://127.0.0.1:10222/oauth/introspect", {"token": mail_access}, basic=("dovecot", "wrongsecret"))
 	expect(status == 200 and json.loads(body) == {"active": False}, "introspection with a wrong dovecot secret returns {'active': false}")
+	# A request with NO client credentials at all must be indistinguishable from a
+	# wrong-secret one: exactly {'active': false}, not a 401 that would reveal the
+	# difference between "unauthenticated" and "authenticated-but-bad-token".
+	status, _hdrs, body = http("POST", "http://127.0.0.1:10222/oauth/introspect", {"token": mail_access})
+	expect(status == 200 and json.loads(body) == {"active": False}, "introspection with no client credentials returns {'active': false}")
 
 	# R6. Refresh-chain lifetime cap, asserted clock-independently from stored token metadata.
 	con = sqlite3.connect(os.path.join(env["STORAGE_ROOT"], "auth", "auth.sqlite"))
