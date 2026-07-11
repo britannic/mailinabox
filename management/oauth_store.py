@@ -87,5 +87,15 @@ class OAuthStore:
 			return {"replayed": True, "code_hash": code_hash}
 		if row["expires_at"] <= now:
 			return None
-		self.conn.execute("UPDATE oauth_codes SET used_at = ? WHERE code_hash = ?", (now, code_hash))
-		return dict(row)
+		# Claim the code atomically: a single guarded UPDATE is the only writer,
+		# so two concurrent redemptions cannot both succeed (the loser sees
+		# used_at already set and reports a replay, which the server treats as
+		# an attack signal and revokes the winner's tokens — RFC-correct).
+		cur = self.conn.execute("UPDATE oauth_codes SET used_at = ? WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?", (now, code_hash, now))
+		if cur.rowcount == 1:
+			return dict(row)
+		# UPDATE failed; check if the code was already used by another thread.
+		row2 = self.conn.execute("SELECT used_at FROM oauth_codes WHERE code_hash = ?", (code_hash,)).fetchone()
+		if row2 is not None and row2[0] is not None:
+			return {"replayed": True, "code_hash": code_hash}
+		return None
