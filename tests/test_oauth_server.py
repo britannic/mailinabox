@@ -338,3 +338,215 @@ def test_revoke_credentials_in_query_rejected(box):
 	r = box.http.post("/oauth/revoke?client_id=roundcube&client_secret=roundcube-secret-456", data={"token": t.refresh})
 	assert r.status_code == 400
 	assert r.get_json()["error"] == "invalid_request"
+
+
+# ---------------------------------------------------------------------------
+# Task 6: authorization_code + PKCE, refresh rotation
+# ---------------------------------------------------------------------------
+
+PANEL_REDIRECT = "https://box.example.com/admin"
+RC_REDIRECT = "https://box.example.com/mail/index.php/login/oauth"
+
+
+def make_code(box, challenge, client_id="panel", email="alice@box.example.com", scopes="admin profile", redirect_uri=PANEL_REDIRECT):
+	raw_code = secrets.token_urlsafe(32)
+	box.store.save_code(raw_code, client_id, email, scopes, redirect_uri, challenge, "S256", int(time.time()))
+	return raw_code
+
+
+def exchange(box, code, verifier, client_id="panel", redirect_uri=PANEL_REDIRECT, secret=None, scope=None):
+	data = {"grant_type": "authorization_code", "code": code, "redirect_uri": redirect_uri, "client_id": client_id, "code_verifier": verifier}
+	if secret is not None:
+		data["client_secret"] = secret
+	if scope is not None:
+		data["scope"] = scope
+	if verifier is None:
+		del data["code_verifier"]
+	return box.http.post("/oauth/token", data=data)
+
+
+def refresh(box, refresh_token, client_id="panel", secret=None, scope=None):
+	data = {"grant_type": "refresh_token", "refresh_token": refresh_token, "client_id": client_id}
+	if secret is not None:
+		data["client_secret"] = secret
+	if scope is not None:
+		data["scope"] = scope
+	return box.http.post("/oauth/token", data=data)
+
+
+def test_code_exchange_issues_linked_token_pair(box):
+	verifier, challenge = pkce_pair()
+	code = make_code(box, challenge)
+	r = exchange(box, code, verifier)
+	assert r.status_code == 200
+	body = r.get_json()
+	assert body["token_type"] == "Bearer"
+	assert body["expires_in"] == oauth_server.ACCESS_TOKEN_TTL
+	assert body["scope"] == "admin profile"
+	access = box.store.lookup_token(body["access_token"], "access")
+	refresh_row = box.store.lookup_token(body["refresh_token"], "refresh")
+	origin = box.store.hash_token(code)
+	for row in (access, refresh_row):
+		assert row["user_email"] == "alice@box.example.com"
+		assert row["client_id"] == "panel"
+		assert row["auth_time"] == TEST_NOW
+		assert row["origin_code_hash"] == origin
+		assert row["password_state"]
+	assert refresh_row["expires_at"] == min(TEST_NOW + oauth_server.REFRESH_TOKEN_TTL, TEST_NOW + oauth_server.CHAIN_LIFETIME_CAP)
+
+
+def test_code_exchange_wrong_pkce_verifier_invalid_grant(box):
+	_, challenge = pkce_pair()
+	other_verifier, _ = pkce_pair()
+	code = make_code(box, challenge)
+	r = exchange(box, code, other_verifier)
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "invalid_grant"
+	assert "/oauth/token" in box.deps.failed_logins
+
+
+def test_code_exchange_missing_pkce_verifier_rejected(box):
+	_, challenge = pkce_pair()
+	code = make_code(box, challenge)
+	r = exchange(box, code, None)
+	assert r.status_code == 400
+	assert r.get_json()["error"] in ("invalid_request", "invalid_grant")
+
+
+def test_code_exchange_wrong_redirect_uri_invalid_grant(box):
+	verifier, challenge = pkce_pair()
+	code = make_code(box, challenge)
+	r = exchange(box, code, verifier, redirect_uri="https://box.example.com/other")
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "invalid_grant"
+
+
+def test_code_exchange_expired_code_invalid_grant(box):
+	verifier, challenge = pkce_pair()
+	code = make_code(box, challenge)
+	box.clock["now"] = float(TEST_NOW + oauth_server.CODE_TTL + 1)
+	r = exchange(box, code, verifier)
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "invalid_grant"
+
+
+def test_code_replay_revokes_issued_tokens(box):
+	verifier, challenge = pkce_pair()
+	code = make_code(box, challenge)
+	first = exchange(box, code, verifier)
+	assert first.status_code == 200
+	body = first.get_json()
+	replay = exchange(box, code, verifier)
+	assert replay.status_code == 400
+	assert replay.get_json()["error"] == "invalid_grant"
+	# Replay revoked everything minted from that code — observable in the store.
+	assert box.store.lookup_token(body["access_token"], "access")["revoked_at"] is not None
+	assert box.store.lookup_token(body["refresh_token"], "refresh")["revoked_at"] is not None
+	assert "/oauth/token" in box.deps.failed_logins
+
+
+def test_code_for_other_client_invalid_grant(box):
+	verifier, challenge = pkce_pair()
+	code = make_code(box, challenge, client_id="roundcube", scopes="mail profile", redirect_uri=RC_REDIRECT)
+	r = exchange(box, code, verifier)  # panel tries to redeem roundcube's code
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "invalid_grant"
+
+
+def test_confidential_roundcube_exchange_requires_secret(box):
+	verifier, challenge = pkce_pair()
+	code = make_code(box, challenge, client_id="roundcube", scopes="mail profile", redirect_uri=RC_REDIRECT)
+	no_secret = exchange(box, code, verifier, client_id="roundcube", redirect_uri=RC_REDIRECT)
+	assert no_secret.status_code in (400, 401)
+	assert no_secret.get_json()["error"] == "invalid_client"
+	code2 = make_code(box, challenge, client_id="roundcube", scopes="mail profile", redirect_uri=RC_REDIRECT)
+	ok = exchange(box, code2, verifier, client_id="roundcube", redirect_uri=RC_REDIRECT, secret="roundcube-secret-456")
+	assert ok.status_code == 200
+	assert ok.get_json()["scope"] == "mail profile"
+
+
+def test_code_exchange_scope_broadening_invalid_scope(box):
+	verifier, challenge = pkce_pair()
+	code = make_code(box, challenge, scopes="profile")
+	r = exchange(box, code, verifier, scope="admin profile")
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "invalid_scope"
+
+
+def test_refresh_rotation(box):
+	verifier, challenge = pkce_pair()
+	code = make_code(box, challenge)
+	body = exchange(box, code, verifier).get_json()
+	old_row = box.store.lookup_token(body["refresh_token"], "refresh")
+	r = refresh(box, body["refresh_token"])
+	assert r.status_code == 200
+	new_body = r.get_json()
+	assert new_body["refresh_token"] != body["refresh_token"]
+	assert new_body["access_token"] != body["access_token"]
+	# Old refresh token is now revoked; new one chains to it.
+	assert box.store.lookup_token(body["refresh_token"], "refresh")["revoked_at"] is not None
+	new_row = box.store.lookup_token(new_body["refresh_token"], "refresh")
+	assert new_row["parent_id"] == old_row["id"]
+	assert new_row["auth_time"] == old_row["auth_time"]
+	assert new_row["origin_code_hash"] == old_row["origin_code_hash"]
+
+
+def test_refresh_reuse_revokes_family(box):
+	verifier, challenge = pkce_pair()
+	code = make_code(box, challenge)
+	gen1 = exchange(box, code, verifier).get_json()
+	gen2 = refresh(box, gen1["refresh_token"]).get_json()
+	box.deps.failed_logins.clear()
+	reuse = refresh(box, gen1["refresh_token"])  # rotated-out token
+	assert reuse.status_code == 400
+	assert reuse.get_json()["error"] == "invalid_grant"
+	assert box.deps.failed_logins == ["/oauth/token"]
+	# The entire family is revoked, including the live gen2 pair.
+	assert box.store.lookup_token(gen2["refresh_token"], "refresh")["revoked_at"] is not None
+	assert box.store.lookup_token(gen2["access_token"], "access")["revoked_at"] is not None
+
+
+def test_refresh_scope_subsetting(box):
+	t = make_user_tokens(box, client_id="panel", scopes="admin profile", origin="origin-sub-1")
+	narrowed = refresh(box, t.refresh, scope="admin")
+	assert narrowed.status_code == 200
+	assert narrowed.get_json()["scope"] == "admin"
+	t2 = make_user_tokens(box, client_id="panel", scopes="admin", origin="origin-sub-2")
+	broadened = refresh(box, t2.refresh, scope="admin profile")
+	assert broadened.status_code == 400
+	assert broadened.get_json()["error"] == "invalid_scope"
+
+
+def test_refresh_chain_cap_forces_reauth(box):
+	# Token row itself unexpired (expires_at in the future), but the chain
+	# anchor (auth_time) is too old: auth_time + CHAIN_LIFETIME_CAP <= now.
+	ps = box.store.password_state(box.deps.get_mail_password("alice@box.example.com"), box.deps.get_mfa_state_json("alice@box.example.com"))
+	raw, _ = box.store.create_token("refresh", "panel", "alice@box.example.com", "admin profile", TEST_NOW + 1000, auth_time=TEST_NOW - oauth_server.CHAIN_LIFETIME_CAP, origin_code_hash="origin-cap-1", password_state=ps)
+	r = refresh(box, raw)
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "invalid_grant"
+
+
+def test_refresh_rotation_never_extends_past_chain_cap(box):
+	auth_time = TEST_NOW - (oauth_server.CHAIN_LIFETIME_CAP - 5000)
+	t = make_user_tokens(box, client_id="panel", scopes="admin profile", auth_time=auth_time, origin="origin-cap-2")
+	r = refresh(box, t.refresh)
+	assert r.status_code == 200
+	new_row = box.store.lookup_token(r.get_json()["refresh_token"], "refresh")
+	assert new_row["expires_at"] == auth_time + oauth_server.CHAIN_LIFETIME_CAP  # == TEST_NOW + 5000, not TEST_NOW + 30 days
+
+
+def test_refresh_expired_token_invalid_grant(box):
+	t = make_user_tokens(box, client_id="panel", scopes="admin profile")
+	box.clock["now"] = float(TEST_NOW + oauth_server.REFRESH_TOKEN_TTL + 1)
+	r = refresh(box, t.refresh)
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "invalid_grant"
+
+
+def test_refresh_password_change_invalid_grant(box):
+	t = make_user_tokens(box, client_id="panel", scopes="admin profile")
+	box.deps.users["alice@box.example.com"]["hash"] = "{SHA512-CRYPT}$6$salt$CHANGED"
+	r = refresh(box, t.refresh)
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "invalid_grant"

@@ -21,7 +21,8 @@ import time
 
 from authlib.integrations.flask_oauth2 import AuthorizationServer
 from authlib.oauth2.rfc6749 import ClientMixin, grants
-from authlib.oauth2.rfc6749.errors import InvalidScopeError
+from authlib.oauth2.rfc6749.errors import InvalidGrantError, InvalidRequestError, InvalidScopeError, UnauthorizedClientError
+from authlib.oauth2.rfc7636 import CodeChallenge
 from flask import Response, abort, jsonify, request
 
 import oauth_clients
@@ -99,6 +100,167 @@ class ClientAdapter(ClientMixin):
 
 	def check_response_type(self, response_type):
 		return response_type == "code" and "authorization_code" in self._client.grant_types
+
+
+def _issue_user_tokens(store, deps, client_id, user_email, scopes, auth_time, origin_code_hash, parent_id=None):
+	# Mints the linked access+refresh pair for user-bound grants (code exchange
+	# and refresh rotation). Both tokens inherit auth_time (anchors the chain
+	# cap) and origin_code_hash (enables code-replay/family revocation), and
+	# carry the current password/MFA-state fingerprint.
+	now = int(time.time())
+	stored_hash = deps.get_mail_password(user_email)
+	if stored_hash is None:
+		raise InvalidGrantError
+	pw_state = store.password_state(stored_hash, deps.get_mfa_state_json(user_email))
+	access_raw, _ = store.create_token("access", client_id, user_email, scopes, now + ACCESS_TOKEN_TTL, auth_time=auth_time, origin_code_hash=origin_code_hash, password_state=pw_state)
+	refresh_expires = min(now + REFRESH_TOKEN_TTL, auth_time + CHAIN_LIFETIME_CAP)
+	refresh_raw, _ = store.create_token("refresh", client_id, user_email, scopes, refresh_expires, auth_time=auth_time, origin_code_hash=origin_code_hash, parent_id=parent_id, password_state=pw_state)
+	return {"access_token": access_raw, "token_type": "Bearer", "expires_in": ACCESS_TOKEN_TTL, "refresh_token": refresh_raw, "scope": scopes}
+
+
+class _AuthCode:
+	# Minimal object shape authlib's AuthorizationCodeGrant and the
+	# CodeChallenge extension expect, wrapping an oauth_codes row dict.
+	def __init__(self, row):
+		self.row = row
+		self.code_challenge = row["code_challenge"]
+		self.code_challenge_method = row["code_challenge_method"]
+
+	def get_redirect_uri(self):
+		return self.row["redirect_uri"]
+
+	def get_scope(self):
+		return self.row["scopes"]
+
+	@staticmethod
+	def is_expired():
+		return False  # take_code() already rejected expired codes
+
+	def get_auth_time(self):
+		return self.row["auth_time"]
+
+	@staticmethod
+	def get_nonce():
+		return None
+
+	@staticmethod
+	def get_acr():
+		return None
+
+	@staticmethod
+	def get_amr():
+		return None
+
+
+class MiabAuthorizationCodeGrant(grants.AuthorizationCodeGrant):
+	# PKCE S256 is enforced for ALL code clients (public and confidential) via
+	# the CodeChallenge(required=True) extension registered in init_oauth.
+	TOKEN_ENDPOINT_AUTH_METHODS = ("none", "client_secret_basic", "client_secret_post")
+
+	def save_authorization_code(self, code, request):
+		pass  # codes are saved by the /oauth/authorize route, never through authlib
+
+	def query_authorization_code(self, code, client):
+		result = self.server.miab_store.take_code(code)
+		if result is None:
+			return None
+		if result.get("replayed"):
+			# RFC 9700 §3: replay of a used code revokes every token issued
+			# from it. The route-level handler logs the resulting invalid_grant.
+			self.server.miab_store.revoke_family_by_origin(result["code_hash"])
+			return None
+		if result["client_id"] != client.get_client_id():
+			return None
+		self._code = _AuthCode(result)
+		return self._code
+
+	def delete_authorization_code(self, authorization_code):
+		pass  # take_code() already marked the code used (single-use)
+
+	@staticmethod
+	def authenticate_user(authorization_code):
+		return authorization_code.row["user_email"]
+
+	def create_token_response(self):
+		client = self.request.client
+		code = self._code
+		scopes = code.get_scope()
+		requested = request.form.get("scope")
+		if requested:
+			# Scope subsetting: never broader than the code's scopes.
+			if not set(requested.split()) <= set(scopes.split()):
+				raise InvalidScopeError
+			scopes = " ".join(sorted(set(requested.split())))
+		token = _issue_user_tokens(self.server.miab_store, self.server.miab_deps, client.get_client_id(), code.row["user_email"], scopes, code.row["auth_time"], code.row["code_hash"])
+		return 200, token, self.TOKEN_RESPONSE_HEADER
+
+
+class MiabRefreshTokenGrant(grants.RefreshTokenGrant):
+	TOKEN_ENDPOINT_AUTH_METHODS = ("none", "client_secret_basic", "client_secret_post")
+
+	# The base-class hook methods are unused because validate_token_request is
+	# fully overridden below (our store model needs reuse detection and the
+	# chain cap, which authlib's default flow has no seams for).
+	@staticmethod
+	def authenticate_refresh_token(_refresh_token):
+		return None
+
+	@staticmethod
+	def authenticate_user(_credential):
+		return None
+
+	def revoke_old_credential(self, credential):
+		pass
+
+	def validate_token_request(self):
+		client = self.authenticate_token_endpoint_client()
+		if not client.check_grant_type(self.GRANT_TYPE):
+			raise UnauthorizedClientError
+		raw = request.form.get("refresh_token")
+		if not raw:
+			raise InvalidRequestError(description='Missing "refresh_token" in request.')
+		store = self.server.miab_store
+		deps = self.server.miab_deps
+		now = int(time.time())
+		row = store.lookup_token(raw, "refresh")
+		if row is None or row["client_id"] != client.get_client_id():
+			raise InvalidGrantError
+		if row["revoked_at"] is not None:
+			# Reuse of a rotated-out refresh token: revoke the whole family.
+			# The route-level handler logs the resulting invalid_grant.
+			if row["origin_code_hash"]:
+				store.revoke_family_by_origin(row["origin_code_hash"])
+			raise InvalidGrantError
+		if row["expires_at"] <= now:
+			raise InvalidGrantError
+		if row["auth_time"] is not None and row["auth_time"] + CHAIN_LIFETIME_CAP <= now:
+			# Absolute chain cap reached: force full interactive re-auth.
+			raise InvalidGrantError
+		requested = request.form.get("scope")
+		granted = set((row["scopes"] or "").split())
+		if requested:
+			if not set(requested.split()) <= granted:
+				raise InvalidScopeError
+			self._new_scopes = " ".join(sorted(set(requested.split())))
+		else:
+			self._new_scopes = row["scopes"]
+		# Fresh password/MFA-state check before rotating.
+		stored_hash = deps.get_mail_password(row["user_email"])
+		if stored_hash is None:
+			raise InvalidGrantError
+		expected = store.password_state(stored_hash, deps.get_mfa_state_json(row["user_email"]))
+		if not hmac.compare_digest(expected, row["password_state"] or ""):
+			store.revoke_token(row["id"])
+			raise InvalidGrantError
+		self._row = row
+
+	def create_token_response(self):
+		store = self.server.miab_store
+		row = self._row
+		# Rotate: retire the old refresh token, chain the new pair to it.
+		store.revoke_token(row["id"])
+		token = _issue_user_tokens(store, self.server.miab_deps, row["client_id"], row["user_email"], self._new_scopes, row["auth_time"], row["origin_code_hash"], parent_id=row["id"])
+		return 200, token, self.TOKEN_RESPONSE_HEADER
 
 
 class MiabClientCredentialsGrant(grants.ClientCredentialsGrant):
@@ -190,6 +352,8 @@ def init_oauth(app, env, deps):
 	authorization.miab_deps = deps
 	authorization.miab_env = env
 	authorization.register_grant(MiabClientCredentialsGrant)
+	authorization.register_grant(MiabAuthorizationCodeGrant, [CodeChallenge(required=True)])
+	authorization.register_grant(MiabRefreshTokenGrant)
 
 	@app.route("/oauth/token", methods=["POST"])
 	def oauth_token():
