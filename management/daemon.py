@@ -10,12 +10,12 @@
 # DEBUG=1 management/daemon.py
 # service mailinabox start # when done debugging, start it up again
 
-import os, os.path, re, json, time
+import os, os.path, re, json, secrets, time
 import multiprocessing.pool
 
 from functools import wraps
 
-from flask import Flask, request, render_template, Response, send_from_directory, make_response
+from flask import Flask, request, render_template, Response, send_from_directory, make_response, g
 
 import auth, oauth_server, utils
 from mailconfig import get_mail_users, get_mail_users_ex, get_admins, add_mail_user, set_mail_password, remove_mail_user
@@ -43,6 +43,37 @@ with open(os.path.join(os.path.dirname(me), "csr_country_codes.tsv"), encoding="
 		csr_country_codes.append((code, name))
 
 app = Flask(__name__, template_folder=os.path.abspath(os.path.join(os.path.dirname(me), "templates")))
+
+# SECURITY HEADERS
+# A strict Content-Security-Policy is a hard requirement of the OAuth design (spec
+# section 10.14): it is the compensating control for web-storage tokens and for
+# authorization codes transiting the URL. Every <script> tag in our templates carries
+# nonce="{{ csp_nonce }}"; anything else inline is blocked. nginx's existing
+# frame-ancestors CSP header remains --- both headers enforce.
+
+@app.before_request
+def make_csp_nonce():
+	g.csp_nonce = secrets.token_urlsafe(16)
+
+@app.before_request
+def apply_forwarded_proto():
+	# nginx terminates TLS and proxies to us over plain HTTP on 127.0.0.1;
+	# trust its X-Forwarded-Proto so Authlib sees the real (https) scheme and
+	# its InsecureTransport check still fires for any genuinely-plaintext request.
+	proto = request.headers.get("X-Forwarded-Proto")
+	if proto:
+		request.environ["wsgi.url_scheme"] = proto
+
+@app.context_processor
+def inject_csp_nonce():
+	return {"csp_nonce": getattr(g, "csp_nonce", "")}
+
+@app.after_request
+def add_security_headers(response):
+	if response.mimetype == "text/html":
+		response.headers["Content-Security-Policy"] = "script-src 'self' 'nonce-" + getattr(g, "csp_nonce", "") + "'; object-src 'none'; base-uri 'none'"
+		response.headers["Referrer-Policy"] = "same-origin"
+	return response
 
 # Decorator to protect views that require a user with 'admin' privileges.
 def authorized_personnel_only(viewfunc):

@@ -40,7 +40,7 @@ sudo management/cli.py user make-admin me@{{hostname}}</pre>
 <p class="subtitle">Log in here for your Mail-in-a-Box control panel.</p>
 
 <div class="login">
-  <form id="loginForm" class="form-horizontal" role="form" onsubmit="do_login(); return false;" method="get">
+  <form id="loginForm" class="form-horizontal" role="form" method="get">
     <div class="form-group">
       <div class="col-sm-offset-3 col-sm-9">
         <p>You will be taken to a sign-in page to enter your email address and password.
@@ -65,7 +65,7 @@ sudo management/cli.py user make-admin me@{{hostname}}</pre>
   </form>
 </div>
 
-<script>
+<script nonce="{{ csp_nonce }}">
 function base64url_encode(bytes) {
   var s = '';
   for (var i = 0; i < bytes.length; i++)
@@ -121,4 +121,8 @@ function show_hide_menus() {
   }
   $('.if-not-logged-in').toggle(!is_logged_in);
 }
+
+$(function() {
+  $('#loginForm').on('submit', function() { do_login(); return false; });
+});
 </script>

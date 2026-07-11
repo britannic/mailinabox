@@ -138,7 +138,7 @@
             <li><a href="#web" class="if-logged-in-admin">Web</a></li>
           </ul>
           <ul class="nav navbar-nav navbar-right">
-            <li class="if-logged-in"><a href="#" onclick="do_logout(); return false;" style="color: white">Log out</a></li>
+            <li class="if-logged-in"><a href="#" id="nav-logout" style="color: white">Log out</a></li>
           </ul>
         </div><!--/.navbar-collapse -->
       </div>
@@ -233,10 +233,10 @@
           </div>
         </div>
 
-        <script src="/admin/assets/jquery.min.js"></script>
-        <script src="/admin/assets/bootstrap/js/bootstrap.min.js"></script>
+        <script nonce="{{ csp_nonce }}" src="/admin/assets/jquery.min.js"></script>
+        <script nonce="{{ csp_nonce }}" src="/admin/assets/bootstrap/js/bootstrap.min.js"></script>
 
-        <script>
+        <script nonce="{{ csp_nonce }}">
 var global_modal_state = null;
 var global_modal_funcs = null;
 
@@ -306,7 +306,7 @@ function show_modal_confirm(title, question, verb, yes_callback, cancel_callback
 
 var ajax_num_executing_requests = 0;
 function ajax_with_indicator(options) {
-  setTimeout("if (ajax_num_executing_requests > 0) $('#ajax_loading_indicator').fadeIn()", 100);
+  setTimeout(function() { if (ajax_num_executing_requests > 0) $('#ajax_loading_indicator').fadeIn(); }, 100);
   function hide_loading_indicator() {
     ajax_num_executing_requests--;
     if (ajax_num_executing_requests == 0)
@@ -568,6 +568,7 @@ function finish_oauth_login(code, state) {
 }
 
 $(function() {
+  $('#nav-logout').on('click', function() { do_logout(); return false; });
   // OAuth redirect return?
   var params = new URLSearchParams(window.location.search);
   if (params.get("code") && params.get("state")) {

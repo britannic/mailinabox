@@ -17,7 +17,6 @@
 import hashlib
 import hmac
 import json
-import os
 import secrets
 import time
 import urllib.parse
@@ -31,17 +30,8 @@ from flask import Response, abort, jsonify, redirect, render_template, request
 import oauth_clients
 from oauth_store import OAuthStore, db_path
 
-# The daemon is only ever reached through nginx, which terminates TLS and
-# reverse-proxies plain HTTP to 127.0.0.1:10222 (conf/nginx-primaryonly.conf);
-# it never accepts connections directly from the internet. Authlib's
-# InsecureTransportError inspects the scheme of the request URL it sees at
-# the WSGI layer, which is always http:// in this topology even though the
-# browser-facing connection is https://, so the check is a false positive
-# here — the same reason Authlib's own documentation disables it behind a
-# reverse proxy. (It also can't be satisfied by request.url alone: Authlib
-# special-cases "http://localhost:<port>", but neither the real proxy target
-# nor Flask's test client produce that exact host:port form.)
-os.environ.setdefault("AUTHLIB_INSECURE_TRANSPORT", "true")
+# HTTPS transport is enforced by Authlib against the real scheme; daemon.py's
+# before_request reconstructs it from X-Forwarded-Proto (nginx terminates TLS).
 
 # Global constants — single source of truth; other modules import these from here.
 ACCESS_TOKEN_TTL = 3600          # seconds

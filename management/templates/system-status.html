@@ -40,12 +40,12 @@
 	<div class="col-md-push-9 col-md-3">
 
 <div id="system-reboot-required" style="display: none; margin-bottom: 1em;">
-	<button type="button" class="btn btn-danger" onclick="confirm_reboot(); return false;">Reboot Box</button>
+	<button type="button" id="reboot-button" class="btn btn-danger">Reboot Box</button>
 	<div>No reboot is necessary.</div>
 </div>
 
 <div id="system-privacy-setting" style="display: none">
-	<div><a onclick="return enable_privacy(!current_privacy_setting)" href="#"><span>Enable/Disable</span> New-Version Check</a></div>
+	<div><a id="privacy-toggle" href="#"><span>Enable/Disable</span> New-Version Check</a></div>
 	<p style="line-height: 125%"><small>(When enabled, status checks phone-home to check for a new release of Mail-in-a-Box.)</small></p>
 </div>
 
@@ -65,7 +65,7 @@
 	</div> <!-- /col -->
 </div> <!-- /row -->
 
-<script>
+<script nonce="{{ csp_nonce }}">
 function show_system_status() {
   const summary = $('#system-checks-summary');
   summary.html("");
@@ -181,4 +181,9 @@ function confirm_reboot() {
         });
     });
 }
+
+$(function() {
+  $('#reboot-button').on('click', function() { confirm_reboot(); return false; });
+  $('#privacy-toggle').on('click', function() { return enable_privacy(!current_privacy_setting); });
+});
 </script>

@@ -28,6 +28,7 @@ from types import SimpleNamespace
 
 import pytest
 from flask import Flask
+from flask.testing import FlaskClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "management"))
 
@@ -35,6 +36,18 @@ import oauth_clients
 import oauth_server
 
 TEST_NOW = 1_700_000_000
+
+
+class HttpsTestClient(FlaskClient):
+	# management/daemon.py no longer sets the global AUTHLIB_INSECURE_TRANSPORT
+	# bypass (Task 11, Step 9): it reconstructs the real scheme per-request from
+	# X-Forwarded-Proto, as nginx would set it in production. This test app is a
+	# bare Flask app (not daemon.py's), so there's no such before_request hook
+	# here; instead, drive every request over https directly so Authlib's
+	# InsecureTransportError check sees a secure scheme, same as it would on-box.
+	def open(self, *args, **kwargs):
+		kwargs.setdefault("base_url", "https://localhost")
+		return super().open(*args, **kwargs)
 
 
 class FakeDeps:
@@ -124,6 +137,7 @@ def box(tmp_path, monkeypatch, clock):
 
 	app = Flask("oauth-test", template_folder=os.path.join(os.path.dirname(__file__), "..", "management", "templates"))
 	app.testing = True
+	app.test_client_class = HttpsTestClient
 	oauth_server.init_oauth(app, env, deps)
 
 	return SimpleNamespace(http=app.test_client(), env=env, deps=deps, store=oauth_server.current_store(env), clock=clock, clients=clients)

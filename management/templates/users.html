@@ -13,7 +13,7 @@
 
 <p>Add an email address to this system. This will create a new login username/password.</p>
 
-<form class="form-inline" role="form" onsubmit="return do_add_user(); return false;">
+<form id="adduser-form" class="form-inline" role="form">
   <div class="form-group">
     <label class="sr-only" for="adduserEmail">Email address</label>
     <input type="email" class="form-control" id="adduserEmail" placeholder="Email Address">
@@ -35,7 +35,7 @@
   <button type="submit" class="btn btn-primary">Add User</button>
 </form>
 <ul style="margin-top: 1em; padding-left: 1.5em; font-size: 90%;">
-  <li>Passwords must be at least eight characters consisting of English letters and numbers only. For best results, <a href="#" onclick="return generate_random_password()">generate a random password</a>.</li>
+  <li>Passwords must be at least eight characters consisting of English letters and numbers only. For best results, <a href="#" id="generate-random-password">generate a random password</a>.</li>
   <li>Use <a href="#aliases">aliases</a> to create email addresses that forward to existing accounts.</li>
   <li>Administrators get access to this control panel.</li>
   <li>User accounts cannot contain any international (non-ASCII) characters, but <a href="#aliases">aliases</a> can.</li>
@@ -71,14 +71,14 @@
         </span>
 
         <span class="if_active">
-          <a href="#" onclick="users_set_quota(this); return false;" class='setquota' title="Set Quota">
+          <a href="#" class='setquota' title="Set Quota">
               set quota
           </a>
           |
         </span>
 
         <span class="if_active">
-          <a href="#" onclick="users_set_password(this); return false;" class='setpw' title="Set Password">
+          <a href="#" class='setpw' title="Set Password">
             set password
           </a>
           |
@@ -87,7 +87,7 @@
         <span class='add-privs'>
         </span>
 
-        <a href="#" onclick="users_remove(this); return false;" class='if_active' title="Archive Account">
+        <a href="#" class='if_active user-remove' title="Archive Account">
           archive account
         </a>
     </td>
@@ -161,7 +161,7 @@ curl -X POST -d "email=new_user@mydomail.com" -d "privilege=admin" https://{{hos
 curl -X POST -d "email=new_user@mydomail.com" https://{{hostname}}/admin/mail/users/privileges/remove
 </pre>
 
-<script>
+<script nonce="{{ csp_nonce }}">
 function show_users() {
   $('#user_table tbody').html("<tr><td colspan='2' class='text-muted'>Loading...</td></tr>")
   api(
@@ -204,7 +204,7 @@ function show_users() {
           var add_privs = ["admin"];
 
           for (var j = 0; j < user.privileges.length; j++) {
-            var p = $("<span><b><span class='name'></span></b> (<a href='#' onclick='mod_priv(this, \"remove\"); return false;' title='Remove Privilege'>remove privilege</a>) |</span>");
+            var p = $("<span><b><span class='name'></span></b> (<a href='#' class='mod-priv' data-action='remove' title='Remove Privilege'>remove privilege</a>) |</span>");
             p.find('span.name').text(user.privileges[j]);
             n.find('.privs').append(p);
             if (add_privs.indexOf(user.privileges[j]) >= 0)
@@ -212,7 +212,7 @@ function show_users() {
           }
 
           for (var j = 0; j < add_privs.length; j++) {
-            var p = $("<span><a href='#' onclick='mod_priv(this, \"add\"); return false;' title='Add Privilege'>make <span class='name'></span></a> | </span>");
+            var p = $("<span><a href='#' class='mod-priv' data-action='add' title='Add Privilege'>make <span class='name'></span></a> | </span>");
             p.find('span.name').text(add_privs[j]);
             n.find('.add-privs').append(p);
           }
@@ -373,4 +373,14 @@ function generate_random_password() {
   show_modal_error("Random Password", "<p>Here, try this:</p> <p><code style='font-size: 110%'>" + pw + "</code></p>");
   return false; // cancel click
 }
+
+$(function() {
+  $('#adduser-form').on('submit', function() { do_add_user(); return false; });
+  $('#generate-random-password').on('click', function() { return generate_random_password(); });
+  // Rows are created dynamically by show_users(); use delegated bindings.
+  $('#user_table').on('click', 'a.setquota', function() { users_set_quota(this); return false; });
+  $('#user_table').on('click', 'a.setpw', function() { users_set_password(this); return false; });
+  $('#user_table').on('click', 'a.user-remove', function() { users_remove(this); return false; });
+  $('#user_table').on('click', 'a.mod-priv', function() { mod_priv(this, $(this).attr('data-action')); return false; });
+});
 </script>
