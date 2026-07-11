@@ -769,3 +769,88 @@ def test_authorize_binding_canonicalization_unambiguous(box):
 	binding_b, expires_b = form_binding(page_b)
 	assert expires_a == expires_b  # sanity check: same binding_expires
 	assert binding_a != binding_b
+
+
+# ---------------------------------------------------------------------------
+# Task 8: /oauth/userinfo, RFC 8414 metadata, validate_bearer
+# ---------------------------------------------------------------------------
+
+def test_userinfo_requires_profile_scope(box):
+	t = make_user_tokens(box, client_id="panel", scopes="admin profile")
+	r = box.http.get("/oauth/userinfo", headers={"Authorization": "Bearer " + t.access})
+	assert r.status_code == 200
+	assert r.get_json() == {"email": "alice@box.example.com", "privileges": ["admin"]}
+	t2 = make_user_tokens(box, client_id="panel", scopes="admin", origin="origin-ui-2")
+	r2 = box.http.get("/oauth/userinfo", headers={"Authorization": "Bearer " + t2.access})
+	assert r2.status_code == 401
+
+
+def test_userinfo_no_bearer_header_401(box):
+	r = box.http.get("/oauth/userinfo")
+	assert r.status_code == 401
+	assert r.headers["WWW-Authenticate"].startswith("Bearer")
+
+
+def test_userinfo_bad_token_401(box):
+	r = box.http.get("/oauth/userinfo", headers={"Authorization": "Bearer nonsense"})
+	assert r.status_code == 401
+	assert 'error="invalid_token"' in r.headers["WWW-Authenticate"]
+
+
+def test_userinfo_client_credentials_token_401(box):
+	# A user-less token can never pass userinfo, even if it somehow had the scope.
+	raw, _ = box.store.create_token("access", "system", None, "profile", int(time.time()) + 600)
+	r = box.http.get("/oauth/userinfo", headers={"Authorization": "Bearer " + raw})
+	assert r.status_code == 401
+
+
+def test_metadata_document(box):
+	r = box.http.get("/.well-known/oauth-authorization-server")
+	assert r.status_code == 200
+	assert r.get_json() == {
+		"issuer": "https://box.example.com",
+		"authorization_endpoint": "https://box.example.com/admin/oauth/authorize",
+		"token_endpoint": "https://box.example.com/admin/oauth/token",
+		"revocation_endpoint": "https://box.example.com/admin/oauth/revoke",
+		"userinfo_endpoint": "https://box.example.com/admin/oauth/userinfo",
+		"scopes_supported": ["mail", "admin", "profile"],
+		"response_types_supported": ["code"],
+		"grant_types_supported": ["authorization_code", "refresh_token", "client_credentials"],
+		"code_challenge_methods_supported": ["S256"],
+		"token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+	}
+
+
+def test_validate_bearer_returns_info(box):
+	t = make_user_tokens(box, client_id="panel", scopes="admin profile")
+	info = oauth_server.validate_bearer(box.env, t.access, "admin", box.deps)
+	assert info == {"user_email": "alice@box.example.com", "scopes": {"admin", "profile"}, "client_id": "panel"}
+
+
+def test_validate_bearer_rejects_expired(box):
+	t = make_user_tokens(box, client_id="panel", scopes="admin profile")
+	box.clock["now"] = float(TEST_NOW + oauth_server.ACCESS_TOKEN_TTL + 1)
+	assert oauth_server.validate_bearer(box.env, t.access, "admin", box.deps) is None
+
+
+def test_validate_bearer_rejects_revoked(box):
+	t = make_user_tokens(box, client_id="panel", scopes="admin profile")
+	box.store.revoke_token(t.access_id)
+	assert oauth_server.validate_bearer(box.env, t.access, "admin", box.deps) is None
+
+
+def test_validate_bearer_rejects_missing_scope(box):
+	t = make_user_tokens(box, client_id="roundcube", scopes="mail profile")
+	assert oauth_server.validate_bearer(box.env, t.access, "admin", box.deps) is None
+
+
+def test_validate_bearer_rejects_password_change(box):
+	t = make_user_tokens(box, client_id="panel", scopes="admin profile")
+	box.deps.users["alice@box.example.com"]["mfa"] = json.dumps([{"id": 9, "type": "totp"}])  # MFA-state change also invalidates
+	assert oauth_server.validate_bearer(box.env, t.access, "admin", box.deps) is None
+
+
+def test_validate_bearer_client_credentials_token(box):
+	raw, _ = box.store.create_token("access", "system", None, "admin", int(time.time()) + 600)
+	info = oauth_server.validate_bearer(box.env, raw, "admin", box.deps)
+	assert info == {"user_email": None, "scopes": {"admin"}, "client_id": "system"}

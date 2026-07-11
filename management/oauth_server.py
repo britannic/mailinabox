@@ -553,3 +553,32 @@ def init_oauth(app, env, deps):
 			q["state"] = p["state"]
 		sep = "&" if "?" in p["redirect_uri"] else "?"
 		return redirect(p["redirect_uri"] + sep + urllib.parse.urlencode(q))
+
+	@app.route("/oauth/userinfo", methods=["GET"])
+	def oauth_userinfo():
+		header = request.headers.get("Authorization", "")
+		if not header.startswith("Bearer "):
+			return Response("", 401, {"WWW-Authenticate": "Bearer"})
+		info = validate_bearer(env, header[len("Bearer "):].strip(), SCOPE_PROFILE, deps)
+		if info is None or info["user_email"] is None:
+			return Response("", 401, {"WWW-Authenticate": 'Bearer error="invalid_token"'})
+		return jsonify({"email": info["user_email"], "privileges": deps.get_user_privileges(info["user_email"])})
+
+	@app.route("/.well-known/oauth-authorization-server", methods=["GET"])
+	def oauth_metadata():
+		# RFC 8414. nginx proxies exactly this public path to the daemon
+		# unchanged (Task 11); the /admin-prefixed endpoints below are the
+		# public URLs (nginx strips /admin before proxying those).
+		base = "https://" + env["PRIMARY_HOSTNAME"]
+		return jsonify({
+			"issuer": base,
+			"authorization_endpoint": base + "/admin/oauth/authorize",
+			"token_endpoint": base + "/admin/oauth/token",
+			"revocation_endpoint": base + "/admin/oauth/revoke",
+			"userinfo_endpoint": base + "/admin/oauth/userinfo",
+			"scopes_supported": [SCOPE_MAIL, SCOPE_ADMIN, SCOPE_PROFILE],
+			"response_types_supported": ["code"],
+			"grant_types_supported": ["authorization_code", "refresh_token", "client_credentials"],
+			"code_challenge_methods_supported": ["S256"],
+			"token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+		})
