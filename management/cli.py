@@ -2,9 +2,11 @@
 #
 # This is a command-line script for calling management APIs
 # on the Mail-in-a-Box control panel backend. The script
-# reads /var/lib/mailinabox/api.key for the backend's
-# root API key. This file is readable only by root, so this
-# tool can only be used as root.
+# reads /var/lib/mailinabox/api.key and exchanges it for an
+# OAuth 2.0 access token (client_credentials grant, client
+# "system"), then calls the API with a Bearer token. The key
+# file is readable only by root, so this tool can only be
+# used as root.
 
 import sys, getpass, urllib.request, urllib.error, json, csv
 import contextlib
@@ -49,14 +51,40 @@ def setup_key_auth(mgmt_uri):
 	with open('/var/lib/mailinabox/api.key', encoding='utf-8') as f:
 		key = f.read().strip()
 
-	auth_handler = urllib.request.HTTPBasicAuthHandler()
-	auth_handler.add_password(
-		realm='Mail-in-a-Box Management Server',
-		uri=mgmt_uri,
-		user=key,
-		passwd='')
-	opener = urllib.request.build_opener(auth_handler)
-	urllib.request.install_opener(opener)
+	# Exchange the root API key for a short-lived OAuth 2.0 access token
+	# using the client_credentials grant (client "system", RFC 6749 §4.4),
+	# then install an opener that sends it as a Bearer token on every call.
+	token_request = urllib.request.Request(
+		mgmt_uri + '/oauth/token',
+		urllib.parse.urlencode({
+			"grant_type": "client_credentials",
+			"client_id": "system",
+			"client_secret": key,
+			"scope": "admin",
+		}).encode("utf8"))
+	try:
+		token_response = urllib.request.urlopen(token_request)
+	except urllib.error.HTTPError as e:
+		# A stale api.key yields an invalid_client OAuth error (400 or 401
+		# depending on the client-auth method the server saw).
+		if e.code in {400, 401}:
+			with contextlib.suppress(Exception):
+				print(e.read().decode("utf8"))
+			print("The management daemon refused access. The API key file may be out of sync. Try 'service mailinabox restart'.", file=sys.stderr)
+		elif hasattr(e, 'read'):
+			print(e.read().decode('utf8'), file=sys.stderr)
+		else:
+			print(e, file=sys.stderr)
+		sys.exit(1)
+	access_token = json.loads(token_response.read().decode("utf8"))["access_token"]
+
+	class BearerAuthHandler(urllib.request.BaseHandler):
+		def http_request(self, req):
+			req.add_unredirected_header("Authorization", "Bearer " + access_token)
+			return req
+		https_request = http_request
+
+	urllib.request.install_opener(urllib.request.build_opener(BearerAuthHandler()))
 
 if len(sys.argv) < 2:
 	print("""Usage:
