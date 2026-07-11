@@ -78,7 +78,10 @@ def env(tmp_path):
 	return {"STORAGE_ROOT": str(tmp_path), "PRIMARY_HOSTNAME": "box.example.com"}
 
 
-# --- make_unauthorized_response (fixes the daemon.py:106 latent bug) ---
+# --- make_unauthorized_response / www_authenticate_challenge (fixes the
+# daemon.py:106 latent bug; www_authenticate_challenge is the single source of
+# truth shared by make_unauthorized_response and daemon.py's
+# authorized_personnel_only 401 path) ---
 
 def test_unauthorized_response_advertises_bearer_and_basic_when_legacy_enabled(auth_module, service, env, monkeypatch):
 	monkeypatch.setattr(auth_module.utils, "load_settings", lambda e: {})
@@ -98,6 +101,21 @@ def test_unauthorized_response_without_env_fails_open_to_both(service):
 	www = service.make_unauthorized_response().headers["WWW-Authenticate"]
 	assert "Bearer realm=" in www
 	assert "Basic realm=" in www
+
+
+def test_www_authenticate_challenge_gates_basic_on_legacy_basic_setting(auth_module, service, env, monkeypatch):
+	# True, and the default when the key is missing, advertise Basic; False excludes
+	# it. Bearer is always present. This is the helper both 401 code paths delegate to.
+	monkeypatch.setattr(auth_module.utils, "load_settings", lambda e: {"auth": {"legacy_basic": True}})
+	assert 'Basic realm="Mail-in-a-Box Management Server"' in service.www_authenticate_challenge(env)
+
+	monkeypatch.setattr(auth_module.utils, "load_settings", lambda e: {})
+	assert 'Basic realm="Mail-in-a-Box Management Server"' in service.www_authenticate_challenge(env)
+
+	monkeypatch.setattr(auth_module.utils, "load_settings", lambda e: {"auth": {"legacy_basic": False}})
+	challenge = service.www_authenticate_challenge(env)
+	assert 'Bearer realm="Mail-in-a-Box Management Server"' in challenge
+	assert "Basic realm=" not in challenge
 
 
 # --- Bearer branch of authenticate() ---

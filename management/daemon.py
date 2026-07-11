@@ -78,11 +78,12 @@ def authorized_personnel_only(viewfunc):
 			error = "You are not an administrator."
 
 		# Not authorized. Return a 401 (send auth) and a prompt to authorize by default.
-		# Bearer is the primary scheme; Basic remains advertised while legacy Basic auth
-		# is enabled (it is by default).
+		# Bearer is the primary scheme; Basic is advertised only while legacy Basic
+		# auth is enabled. The challenge string is built by auth_service so this stays
+		# consistent with the 401 error handler above (single source of truth).
 		status = 401
 		headers = {
-			'WWW-Authenticate': f'Bearer realm="{auth_service.auth_realm}", Basic realm="{auth_service.auth_realm}"',
+			'WWW-Authenticate': auth_service.www_authenticate_challenge(env),
 			'X-Reason': error,
 		}
 

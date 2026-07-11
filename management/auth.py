@@ -253,15 +253,21 @@ class AuthService:
 		except RuntimeError:
 			print(message, file=sys.stderr)
 
-	def make_unauthorized_response(self, env=None):
-		# 401 challenge response. Fixes the latent bug where daemon.py's 401 error
-		# handler called a method that did not exist. Bearer is always advertised;
-		# Basic only while legacy Basic auth is enabled (fail-open when env is not
-		# available to read settings from).
+	def www_authenticate_challenge(self, env=None):
+		# Single source of truth for the WWW-Authenticate challenge string, shared
+		# by make_unauthorized_response below and daemon.py's authorized_personnel_only
+		# 401 path. Bearer is always advertised; Basic only while legacy Basic auth is
+		# enabled (fail-open to advertising Basic when env is not available to read
+		# settings from).
 		challenge = f'Bearer realm="{self.auth_realm}"'
 		if env is None or self.is_legacy_basic_enabled(env):
 			challenge += f', Basic realm="{self.auth_realm}"'
-		return Response("", 401, {"WWW-Authenticate": challenge})
+		return challenge
+
+	def make_unauthorized_response(self, env=None):
+		# 401 challenge response. Fixes the latent bug where daemon.py's 401 error
+		# handler called a method that did not exist.
+		return Response("", 401, {"WWW-Authenticate": self.www_authenticate_challenge(env)})
 
 	def deps(self, env, log_failed_login=None):
 		# Build the callables object consumed by oauth_server.init_oauth/validate_bearer.
