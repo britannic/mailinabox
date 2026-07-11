@@ -94,7 +94,7 @@ function do_login() {
     window.location = "/admin/oauth/authorize"
       + "?response_type=code"
       + "&client_id=panel"
-      + "&redirect_uri=" + encodeURIComponent("https://" + window.location.host + "/admin")
+      + "&redirect_uri=" + encodeURIComponent(window.location.origin + "/admin")
       + "&scope=" + encodeURIComponent("admin profile")
       + "&state=" + state
       + "&code_challenge=" + challenge

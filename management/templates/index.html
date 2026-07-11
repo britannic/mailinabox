@@ -535,7 +535,7 @@ function finish_oauth_login(code, state) {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: "grant_type=authorization_code&client_id=panel"
-      + "&redirect_uri=" + encodeURIComponent("https://" + window.location.host + "/admin")
+      + "&redirect_uri=" + encodeURIComponent(window.location.origin + "/admin")
       + "&code=" + encodeURIComponent(code)
       + "&code_verifier=" + encodeURIComponent(verifier)
   }).then(function(res) { return res.json().then(function(body) { return { ok: res.ok, body: body }; }); })
