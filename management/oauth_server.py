@@ -477,7 +477,14 @@ def init_oauth(app, env, deps):
 		# Request-binding token: ties a rendered form to the exact authorization
 		# request it was rendered for, so a captured form POST cannot be replayed
 		# against a different client/redirect/scope/challenge.
-		message = "authz|" + p["client_id"] + "|" + p["redirect_uri"] + "|" + p["scope"] + "|" + p["state"] + "|" + p["code_challenge"] + "|" + str(binding_expires)
+		#
+		# state and code_challenge are arbitrary, client-controlled strings, so a
+		# plain "|".join(...) of the raw fields would be ambiguous (a "|" inside
+		# one field could be confused with the delimiter, letting distinct field
+		# tuples hash identically). Hash each field to a fixed-length digest
+		# before joining so no field's contents can be mistaken for a delimiter.
+		fields = (p["client_id"], p["redirect_uri"], p["scope"], p["state"], p["code_challenge"], str(binding_expires))
+		message = "authz|" + "|".join(hashlib.sha256(field.encode()).hexdigest() for field in fields)
 		return hmac.new(store.get_server_secret(), message.encode(), hashlib.sha256).hexdigest()
 
 	def render_authorize_form(p, error=None, show_totp=False, email=""):

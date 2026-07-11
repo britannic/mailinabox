@@ -750,3 +750,22 @@ def test_authorize_binding_expiry(box):
 	r = post_login(box, url, page)
 	assert r.status_code == 200
 	assert "expired" in r.get_data(as_text=True)
+
+
+def test_authorize_binding_canonicalization_unambiguous(box):
+	# state and code_challenge are arbitrary, client-controlled strings. Before
+	# the per-field-hash fix, the binding message was built by naively joining
+	# raw fields with "|", so state="a|b", code_challenge="c" and state="a",
+	# code_challenge="b|c" concatenated identically and hashed to the same
+	# binding. Both GETs below happen at the same frozen clock tick (the
+	# `clock` fixture freezes time.time), so binding_expires is identical too
+	# -- the only difference is where the "|" falls -- and the bindings must
+	# still differ.
+	url_a = authz_url("c", state="a|b", code_challenge="c")
+	url_b = authz_url("c", state="a", code_challenge="b|c")
+	page_a = box.http.get(url_a).get_data(as_text=True)
+	page_b = box.http.get(url_b).get_data(as_text=True)
+	binding_a, expires_a = form_binding(page_a)
+	binding_b, expires_b = form_binding(page_b)
+	assert expires_a == expires_b  # sanity check: same binding_expires
+	assert binding_a != binding_b
