@@ -108,6 +108,7 @@ source setup/system.sh
 source setup/ssl.sh
 source setup/dns.sh
 source setup/mail-postfix.sh
+source setup/oauth.sh
 source setup/mail-dovecot.sh
 source setup/mail-users.sh
 source setup/dkim.sh
