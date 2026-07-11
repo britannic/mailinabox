@@ -237,6 +237,11 @@ if __name__ == "__main__":
 	# Mail-in-a-Box control panel
 	run_test(http_test, ["/admin/login", 200], 20, 30, 1)
 
+	# Mail-in-a-Box OAuth token endpoint: repeated client-authentication
+	# failures call log_failed_login and must trip the same
+	# miab-management-daemon jail as the login route above.
+	run_test(http_test, ["/admin/oauth/token", 401, {"grant_type": "client_credentials"}, None, ["system", "wrongsecret"]], 20, 30, 1)
+
 	# Munin via the Mail-in-a-Box control panel
 	run_test(http_test, ["/admin/munin/", 401], 20, 30, 1)
 
