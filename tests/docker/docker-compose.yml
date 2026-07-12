@@ -1,0 +1,38 @@
+# Testing-only Mail-in-a-Box. NOT FOR PRODUCTION. Do not expose to an
+# untrusted network. One-command deploy:  docker compose up -d --build
+services:
+  miab:
+    build:
+      context: ../..                 # repo root (so the Dockerfile's `COPY .` sees the whole tree)
+      dockerfile: tests/docker/Dockerfile
+    image: miab-test:latest
+    container_name: miab-test
+    hostname: box.test.lan
+    # systemd-as-PID-1 needs these. `privileged` is the simplest thing that
+    # works across Docker/Podman and cgroup v1/v2 for a throwaway test box.
+    privileged: true
+    cgroup: host
+    stop_signal: SIGRTMIN+3
+    tmpfs:
+      - /run
+      - /run/lock
+    environment:
+      MIAB_TEST_MODE: "1"
+      PRIMARY_HOSTNAME: box.test.lan
+      # Leave PUBLIC_IP unset → test-mode.sh defaults it to the container's
+      # private IP. Set it here only if you need a specific value.
+    ports:
+      - "25:25"
+      - "465:465"
+      - "587:587"
+      - "993:993"
+      - "995:995"
+      - "4190:4190"
+      - "80:80"
+      - "443:443"
+      # - "53:53/udp"   # uncomment to expose the box's nsd DNS
+    # Uncomment to persist mail/config across `docker compose down` recreations:
+    # volumes:
+    #   - miab-userdata:/home/user-data
+# volumes:
+#   miab-userdata:
