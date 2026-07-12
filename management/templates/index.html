@@ -90,6 +90,16 @@
       }
         </style>
         <link rel="stylesheet" href="/admin/assets/bootstrap/css/bootstrap-theme.min.css">
+
+        <!-- Load jQuery and Bootstrap's JS in <head>, before the body's inline
+             script blocks. Many of those blocks live in Jinja-included panels
+             that run at parse time and use jQuery (e.g. login.html registers its
+             submit handler via a jQuery ready callback). If jQuery were loaded at
+             the end of <body> instead, every such block would throw
+             "$ is not defined" and no event handler — including the login form's —
+             would ever bind, leaving the whole control panel non-functional. -->
+        <script nonce="{{ csp_nonce }}" src="/admin/assets/jquery.min.js"></script>
+        <script nonce="{{ csp_nonce }}" src="/admin/assets/bootstrap/js/bootstrap.min.js"></script>
     </head>
     <body>
 
@@ -232,9 +242,6 @@
             </div>
           </div>
         </div>
-
-        <script nonce="{{ csp_nonce }}" src="/admin/assets/jquery.min.js"></script>
-        <script nonce="{{ csp_nonce }}" src="/admin/assets/bootstrap/js/bootstrap.min.js"></script>
 
         <script nonce="{{ csp_nonce }}">
 var global_modal_state = null;
