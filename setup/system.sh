@@ -357,7 +357,15 @@ fi
 # which is where bind9 will be running. Obviously don't do this before
 # installing bind9 or else apt won't be able to resolve a server to
 # download bind9 from.
-rm -f /etc/resolv.conf
+# Normally /etc/resolv.conf is a systemd-resolved symlink that must be broken
+# with rm before we can write a real file in its place. Inside a container it is
+# instead a bind mount the runtime manages: it cannot be unlinked ("Device or
+# resource busy", which would abort setup under set -e) but it CAN be overwritten
+# in place, which the echo below does. So skip the rm in TEST/LAB MODE; the end
+# state (a real file containing "nameserver 127.0.0.1") is identical.
+if [ -z "${MIAB_TEST_MODE:-}" ]; then
+	rm -f /etc/resolv.conf
+fi
 tools/editconf.py /etc/systemd/resolved.conf DNSStubListener=no
 echo "nameserver 127.0.0.1" > /etc/resolv.conf
 
