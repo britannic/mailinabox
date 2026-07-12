@@ -1,0 +1,9 @@
+# Build-context excludes for the testing-only container image
+# (tests/docker/Dockerfile, whose context is the repo root).
+# MiaB is not deployed via Docker in production; this file only affects that
+# test image's build.
+.git
+.superpowers
+docs/superpowers
+**/__pycache__
+*.pyc
