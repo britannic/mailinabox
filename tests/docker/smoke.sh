@@ -27,7 +27,10 @@ done
 echo "==> provisioned."
 
 echo "==> assert the lab banner appeared"
-if docker compose logs 2>&1 | grep -q "TEST/LAB MODE"; then echo "ok: banner"; else echo "FAIL: banner missing"; exit 1; fi
+# The banner is emitted by the provisioning oneshot (setup/test-mode.sh, run by
+# miab-provision.service), so it lands in journald under that unit — not on
+# systemd's PID-1 console that `docker compose logs` captures.
+if docker exec "$C" journalctl -u miab-provision.service --no-pager 2>&1 | grep -q "TEST/LAB MODE"; then echo "ok: banner"; else echo "FAIL: banner missing"; exit 1; fi
 
 echo "==> assert the management daemon is listening on 10222"
 # Bounded: if the daemon never binds (crash-loop, port conflict) this must FAIL
