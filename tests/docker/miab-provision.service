@@ -1,0 +1,19 @@
+[Unit]
+Description=Mail-in-a-Box first-boot provisioning (TEST/LAB MODE)
+After=multi-user.target network-online.target
+Wants=network-online.target
+ConditionPathExists=!/root/.miab-provisioned
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# MIAB_TEST_MODE is inherited from the container environment (Dockerfile ENV /
+# compose environment). Pass it explicitly too so the unit is self-describing.
+Environment=MIAB_TEST_MODE=1
+ExecStart=/usr/local/bin/miab-provision.sh
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target
