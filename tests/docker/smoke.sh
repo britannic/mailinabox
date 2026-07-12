@@ -36,8 +36,10 @@ if docker exec "$C" grep -qx "MIAB_TEST_MODE=1" /etc/mailinabox.conf; then echo 
 
 echo "==> assert the management daemon is listening on 10222"
 # Bounded: if the daemon never binds (crash-loop, port conflict) this must FAIL
-# loudly rather than hang the gate forever.
-timeout 60 docker exec "$C" bash -c 'until nc -z 127.0.0.1 10222; do sleep 2; done' || { echo "FAIL: daemon not listening on 10222"; docker compose logs --tail=50; exit 1; }
+# loudly rather than hang the gate forever. Run `timeout` INSIDE the container
+# (Ubuntu has GNU coreutils); a host-side `timeout` isn't portable — macOS,
+# a common Docker host here, ships none.
+docker exec "$C" bash -c 'timeout 60 bash -c "until nc -z 127.0.0.1 10222; do sleep 2; done"' || { echo "FAIL: daemon not listening on 10222"; docker compose logs --tail=50; exit 1; }
 echo "ok: daemon up"
 
 echo "==> assert the admin user exists"
