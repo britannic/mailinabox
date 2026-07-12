@@ -7,7 +7,9 @@ cd "$(dirname "$0")"
 
 C=miab-test
 echo "==> building + starting"
-docker compose up -d --build
+# Fail fast on a build/start error instead of falling into the 30-min
+# provisioning wait and misreporting it as a timeout.
+docker compose up -d --build || { echo "FAIL: build/start failed"; exit 1; }
 
 echo "==> waiting for provisioning (up to 30 min) ..."
 deadline=$(( $(date +%s) + 1800 ))
@@ -21,14 +23,16 @@ echo "==> assert the lab banner appeared"
 if docker compose logs 2>&1 | grep -q "TEST/LAB MODE"; then echo "ok: banner"; else echo "FAIL: banner missing"; exit 1; fi
 
 echo "==> assert the management daemon is listening on 10222"
-docker exec "$C" bash -c 'until nc -z 127.0.0.1 10222; do sleep 2; done' || { echo "FAIL: daemon down"; exit 1; }
+# Bounded: if the daemon never binds (crash-loop, port conflict) this must FAIL
+# loudly rather than hang the gate forever.
+timeout 60 docker exec "$C" bash -c 'until nc -z 127.0.0.1 10222; do sleep 2; done' || { echo "FAIL: daemon not listening on 10222"; docker compose logs --tail=50; exit 1; }
 echo "ok: daemon up"
 
 echo "==> assert the admin user exists"
 if docker exec "$C" management/cli.py user 2>/dev/null | grep -q "me@box.test.lan"; then echo "ok: admin user"; else echo "FAIL: admin user missing"; exit 1; fi
 
 echo "==> assert the panel answers HTTPS (self-signed)"
-code=$(docker exec "$C" curl -sk -o /dev/null -w '%{http_code}' https://box.test.lan/admin/)
+code=$(docker exec "$C" curl -sk --max-time 15 -o /dev/null -w '%{http_code}' https://box.test.lan/admin/)
 if [ "$code" = "200" ]; then echo "ok: panel 200"; else echo "FAIL: panel returned $code"; exit 1; fi
 
 echo "ALL SMOKE CHECKS PASSED."
