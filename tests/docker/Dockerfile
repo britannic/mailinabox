@@ -9,9 +9,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     MIAB_TEST_MODE=1 \
     PRIMARY_HOSTNAME=box.test.lan
 
-# systemd + the tools setup and the lab defaults need.
+# systemd + the tools setup and the lab defaults need. `locales` is required:
+# the minimal ubuntu:22.04 image has no `locale-gen`, which setup/start.sh's
+# UTF-8 setup calls early (a normal Ubuntu install ships it).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        systemd systemd-sysv dbus git curl ca-certificates sudo iproute2 \
+        systemd systemd-sysv dbus git curl ca-certificates sudo iproute2 locales \
     && rm -rf /var/lib/apt/lists/*
 
 # Container hygiene for systemd-as-PID-1: drop units that don't apply in a

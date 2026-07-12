@@ -14,6 +14,13 @@ docker compose up -d --build || { echo "FAIL: build/start failed"; exit 1; }
 echo "==> waiting for provisioning (up to 30 min) ..."
 deadline=$(( $(date +%s) + 1800 ))
 until docker exec "$C" test -f /root/.miab-provisioned 2>/dev/null; do
+	# Fail fast if the provisioning oneshot died, instead of waiting out the
+	# full timeout for a marker that will never be written.
+	if docker exec "$C" systemctl is-failed --quiet miab-provision.service 2>/dev/null; then
+		echo "FAIL: provisioning service failed"
+		docker exec "$C" journalctl -u miab-provision.service --no-pager 2>&1 | tail -40
+		exit 1
+	fi
 	if [ "$(date +%s)" -ge "$deadline" ]; then echo "FAIL: provisioning timed out"; docker compose logs --tail=50; exit 1; fi
 	sleep 10
 done
