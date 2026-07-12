@@ -4,6 +4,13 @@
 
 source setup/functions.sh # load our functions
 
+# TEST/LAB MODE: when MIAB_TEST_MODE is set, relax external-dependency
+# validation and supply lab defaults (see setup/test-mode.sh). Sourced before
+# preflight so its exports apply to the whole run. Inert when the var is unset.
+if [ -n "${MIAB_TEST_MODE:-}" ]; then
+	source setup/test-mode.sh
+fi
+
 # Check system setup: Are we running as root on Ubuntu 18.04 on a
 # machine with enough memory? Is /tmp mounted with exec.
 # If not, this shows an error and exits.
@@ -101,6 +108,7 @@ PUBLIC_IPV6=$PUBLIC_IPV6
 PRIVATE_IP=$PRIVATE_IP
 PRIVATE_IPV6=$PRIVATE_IPV6
 MTA_STS_MODE=${DEFAULT_MTA_STS_MODE:-enforce}
+MIAB_TEST_MODE=${MIAB_TEST_MODE:-}
 EOF
 
 # Start service configuration.
