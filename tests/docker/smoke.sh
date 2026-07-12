@@ -26,11 +26,13 @@ until docker exec "$C" test -f /root/.miab-provisioned 2>/dev/null; do
 done
 echo "==> provisioned."
 
-echo "==> assert the lab banner appeared"
-# The banner is emitted by the provisioning oneshot (setup/test-mode.sh, run by
-# miab-provision.service), so it lands in journald under that unit — not on
-# systemd's PID-1 console that `docker compose logs` captures.
-if docker exec "$C" journalctl -u miab-provision.service --no-pager 2>&1 | grep -q "TEST/LAB MODE"; then echo "ok: banner"; else echo "FAIL: banner missing"; exit 1; fi
+echo "==> assert MIAB_TEST_MODE was active during provisioning"
+# Use the persistent conf marker start.sh writes, not the journald banner: the
+# banner is attributed to the miab-provision.service unit asynchronously, so a
+# 'journalctl -u ...' grep run the instant the provisioned-marker appears can
+# race and come back empty. /etc/mailinabox.conf is written early in start.sh
+# and only carries MIAB_TEST_MODE=1 when test mode was active — deterministic.
+if docker exec "$C" grep -qx "MIAB_TEST_MODE=1" /etc/mailinabox.conf; then echo "ok: test-mode marker"; else echo "FAIL: MIAB_TEST_MODE marker missing"; exit 1; fi
 
 echo "==> assert the management daemon is listening on 10222"
 # Bounded: if the daemon never binds (crash-loop, port conflict) this must FAIL
