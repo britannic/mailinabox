@@ -42,11 +42,30 @@ The box is already provisioned, so start at the runbook's verification steps:
 ```bash
 docker exec -it miab-test bash
 tests/test_auth_oauth.py box.test.lan me@box.test.lan 12345678
-tests/fail2ban.py box.test.lan
 ```
 
 Browser gates (Roundcube SSO, panel login, CSP/Munin console sweep) are done
 from your host browser against `https://box.test.lan/...`.
+
+### fail2ban test (needs SSH)
+
+`tests/fail2ban.py` verifies IP banning, but it takes **three** arguments and
+SSHes into the box to reset bans between attempts:
+
+```bash
+tests/fail2ban.py "ssh user@hostname" hostname owncloud_user
+```
+
+This minimal test image does not run `sshd`, so the fail2ban test is not usable
+out of the box. To exercise it, either add `openssh-server` to the image and
+enable it, then run (from a machine that can reach the box):
+
+```bash
+tests/fail2ban.py "ssh root@box.test.lan" box.test.lan me@box.test.lan
+```
+
+or verify banning manually: hammer a login endpoint with bad credentials and
+watch `docker exec miab-test fail2ban-client status` show the jail ban.
 
 ## Expected red health checks
 
@@ -57,8 +76,8 @@ functionality you're testing.
 
 ## Systemd-in-Docker requirements
 
-The compose file runs the container `privileged` with `cgroup: host` and a
-tmpfs `/run` — the simplest configuration that works across Docker/Podman and
+The compose file runs the container `privileged` with `cgroup: host` and
+tmpfs mounts on `/run` and `/run/lock` — the simplest configuration that works across Docker/Podman and
 cgroup v1/v2 for a throwaway box. This is a testing tradeoff; do not use it for
 anything but local/lab QA.
 
