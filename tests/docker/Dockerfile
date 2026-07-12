@@ -9,11 +9,19 @@ ENV DEBIAN_FRONTEND=noninteractive \
     MIAB_TEST_MODE=1 \
     PRIMARY_HOSTNAME=box.test.lan
 
-# systemd + the tools setup and the lab defaults need. `locales` is required:
-# the minimal ubuntu:22.04 image has no `locale-gen`, which setup/start.sh's
-# UTF-8 setup calls early (a normal Ubuntu install ships it).
+# systemd + the tools setup and the lab defaults need. Two packages exist on a
+# real Ubuntu Server but not in the stripped ubuntu:22.04 image, and setup/start.sh
+# assumes both are already present before it installs anything:
+#   - locales: provides locale-gen, which start.sh calls for its UTF-8 setup.
+#   - python3: start.sh runs setup/migrate.py (shebang /usr/bin/python3) at
+#     first-boot BEFORE setup/system.sh installs the Python stack; and our
+#     NONINTERACTIVE=1 test mode skips the questions.sh block that would otherwise
+#     apt-install it. Pre-installing matches a real server, not a workaround.
+# locale-gen en_US.UTF-8 up front silences a benign setlocale warning and mirrors
+# a normal Ubuntu install where that locale is already generated.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        systemd systemd-sysv dbus git curl ca-certificates sudo iproute2 locales \
+        systemd systemd-sysv dbus git curl ca-certificates sudo iproute2 locales python3 \
+    && locale-gen en_US.UTF-8 \
     && rm -rf /var/lib/apt/lists/*
 
 # Container hygiene for systemd-as-PID-1: drop units that don't apply in a
