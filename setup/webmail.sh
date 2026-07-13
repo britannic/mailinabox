@@ -74,6 +74,10 @@ if [ $needs_update == 1 ]; then
 	tar -C /usr/local/lib --no-same-owner -zxf /tmp/roundcube.tgz
 	rm -rf /usr/local/lib/roundcubemail
 	mv /usr/local/lib/roundcubemail-$VERSION/ $RCM_DIR
+	# Remove the web installer: setup owns config generation, so it must
+	# never be reachable — and nginx's /mail/ alias would otherwise serve
+	# public_html/installer.php as a static file (source disclosure).
+	rm -rf $RCM_DIR/installer $RCM_DIR/public_html/installer.php
 	rm -f /tmp/roundcube.tgz
 
 	# install roundcube persistent_login plugin
