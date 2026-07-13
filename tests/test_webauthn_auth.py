@@ -464,6 +464,37 @@ def test_register_finish_rejects_challenge_user_mismatch(wbox):
 	assert wbox.store.get_webauthn_credentials("alice@box.example.com") == []
 
 
+def test_register_finish_duplicate_credential_id_generic_400_not_500(wbox, monkeypatch):
+	# webauthn_credentials.credential_id is UNIQUE. Force a second finish to
+	# verify against the SAME already-enrolled credential (monkeypatching
+	# verify_registration_response's returned credential_id), so the store
+	# INSERT hits the UNIQUE constraint. That must collapse to the same
+	# generic 400 as every other register-finish failure, not an unhandled
+	# sqlite3.IntegrityError -> 500, and must not create a second row.
+	headers = _admin_headers(wbox, "alice@box.example.com")
+	options_json = wbox.http.post("/auth/webauthn/register/begin", headers=headers).get_data(as_text=True)
+	attestation = _register_attestation(options_json)
+	r = wbox.http.post("/auth/webauthn/register/finish", json=attestation, headers=headers)
+	assert r.status_code == 200, r.get_data(as_text=True)
+	assert len(wbox.store.get_webauthn_credentials("alice@box.example.com")) == 1
+	dup_credential_id = wbox.store.get_webauthn_credentials("alice@box.example.com")[0]["credential_id"]
+
+	options_json2 = wbox.http.post("/auth/webauthn/register/begin", headers=headers).get_data(as_text=True)
+	attestation2 = _register_attestation(options_json2)
+	real_verify = webauthn.verify_registration_response
+
+	def fake_verify(*args, **kwargs):
+		verification = real_verify(*args, **kwargs)
+		verification.credential_id = dup_credential_id
+		return verification
+
+	monkeypatch.setattr(webauthn_auth.webauthn, "verify_registration_response", fake_verify)
+	r2 = wbox.http.post("/auth/webauthn/register/finish", json=attestation2, headers=headers)
+	assert r2.status_code == 400, r2.get_data(as_text=True)
+	assert r2.get_json()["error"] == "Could not verify passkey."
+	assert len(wbox.store.get_webauthn_credentials("alice@box.example.com")) == 1
+
+
 def test_register_endpoints_404_when_flag_off(wbox, monkeypatch):
 	monkeypatch.setattr(webauthn_auth, "is_passkeys_enabled", lambda env: False)
 	headers = _admin_headers(wbox, "alice@box.example.com")
@@ -753,6 +784,31 @@ def test_delete_credential_and_cross_user_isolation(wbox):
 	assert r.status_code == 200
 	assert r.get_json() == {"ok": True}
 	assert wbox.store.get_webauthn_credentials("alice@box.example.com") == []
+
+
+def test_delete_credential_honors_store_false_return_on_race(wbox, monkeypatch):
+	# Mirrors the rename handler's pattern: store.delete_webauthn_credential's
+	# rowcount==1 boolean must be honored, not discarded. Simulates a
+	# concurrent delete winning the race -- the id is owned at the pre-check,
+	# but the store call itself returns False (row already gone) -- and
+	# asserts the handler aborts with 404 instead of blindly returning
+	# 200 {ok:true}.
+	alice_id = _seed_credential(wbox, "alice@box.example.com", b"cred-alice-race", "Alice Key")
+	token = _mint_admin_token(wbox, "alice@box.example.com")
+	headers = {"Authorization": "Bearer " + token}
+
+	calls = []
+
+	def fake_delete(cred_row_id, user_email):
+		calls.append((cred_row_id, user_email))
+		return False
+
+	monkeypatch.setattr(wbox.store, "delete_webauthn_credential", fake_delete)
+	r = wbox.http.delete(f"/auth/webauthn/credentials/{alice_id}", headers=headers)
+	assert r.status_code == 404
+	# The handler actually called the store and used its return value -- not a
+	# stale in-memory `owned` check alone.
+	assert calls == [(alice_id, "alice@box.example.com")]
 
 
 def test_management_endpoints_404_when_feature_disabled(wbox, monkeypatch):

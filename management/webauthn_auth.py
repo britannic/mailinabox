@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import secrets
+import sqlite3
 import threading
 import time
 
@@ -304,7 +305,16 @@ def init_webauthn(app, env, deps):
 			return jsonify({"error": "Could not verify passkey."}), 400
 		transports = body.get("response", {}).get("transports")
 		transports_json = json.dumps(transports) if transports else None
-		store.add_webauthn_credential(user_email, verification.credential_id, verification.credential_public_key, verification.sign_count, transports_json, verification.aaguid, "Passkey")
+		try:
+			store.add_webauthn_credential(user_email, verification.credential_id, verification.credential_public_key, verification.sign_count, transports_json, verification.aaguid, "Passkey")
+		except sqlite3.IntegrityError:
+			# credential_id is UNIQUE; a duplicate (replayed finish for an
+			# already-enrolled authenticator, or a race) must collapse to the SAME
+			# generic error as every other register-finish failure (spec 11), not
+			# an unhandled 500. Nothing is stored and the challenge is already
+			# consumed, so this stays fail-closed.
+			app.logger.warning("passkey registration failed: duplicate credential_id for %s", user_email)
+			return jsonify({"error": "Could not verify passkey."}), 400
 		cred = store.get_webauthn_credential_by_id(verification.credential_id)
 		app.logger.info("passkey enrolled for %s (cred %s, aaguid %s)", user_email, verification.credential_id.hex()[:16], verification.aaguid)
 		return jsonify({"id": cred["id"], "name": cred["name"], "created_at": cred["created_at"], "last_used_at": cred["last_used_at"], "aaguid": cred["aaguid"]})
@@ -434,7 +444,11 @@ def init_webauthn(app, env, deps):
 		if cred_id not in owned:
 			# Unknown id, or one belonging to another user -> 404 (no enumeration).
 			abort(404)
-		store.delete_webauthn_credential(cred_id, user_email)
+		if not store.delete_webauthn_credential(cred_id, user_email):
+			# Owned per the check above but gone by the time of the DELETE -- a
+			# concurrent delete raced this request to a no-op. Mirrors the rename
+			# handler: never return 200 {ok:true} for a delete that removed nothing.
+			abort(404)
 		app.logger.info("Passkey revoked for %s (credential %s)", user_email, owned[cred_id]["credential_id"].hex()[:16])
 		return jsonify({"ok": True})
 
