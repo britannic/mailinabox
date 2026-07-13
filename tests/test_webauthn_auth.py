@@ -570,3 +570,93 @@ def test_authenticate_finish_bad_redirect_uri_fatal_no_code(wbox, soft):
 	assert r.get_json(silent=True) is None  # not the JSON {"redirect": ...} success shape
 	# A client-config error mirrors the password path: it is not a failed login.
 	assert wbox.deps.failed_logins == []
+
+
+def test_authenticate_finish_replayed_challenge_rejected(wbox, soft):
+	enroll(wbox, soft)
+	_, challenge = pkce_pair()
+	c = wbox.http.post("/auth/webauthn/authenticate/begin").get_json()["challenge"]
+	assertion = json.dumps(soft.get(c, uv=True, origin=ORIGIN, sign_count=1))
+	url = "/auth/webauthn/authenticate/finish?" + authorize_query(challenge)
+	first = wbox.http.post(url, data=assertion, content_type="application/json")
+	assert first.status_code == 200
+	second = wbox.http.post(url, data=assertion, content_type="application/json")
+	assert second.status_code == 400
+	assert second.get_json()["error"] == "This request expired, please try again."
+	assert wbox.deps.failed_logins == ["/auth/webauthn/authenticate/finish"]
+
+
+def test_authenticate_finish_expired_challenge_rejected(wbox, soft):
+	enroll(wbox, soft)
+	_, challenge = pkce_pair()
+	c = wbox.http.post("/auth/webauthn/authenticate/begin").get_json()["challenge"]
+	assertion = json.dumps(soft.get(c, uv=True, origin=ORIGIN, sign_count=1))
+	wbox.clock["now"] += 121  # challenge TTL is 120s
+	url = "/auth/webauthn/authenticate/finish?" + authorize_query(challenge)
+	r = wbox.http.post(url, data=assertion, content_type="application/json")
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "This request expired, please try again."
+
+
+def test_authenticate_finish_wrong_type_challenge_rejected(wbox, soft):
+	# A registration-typed challenge must not satisfy the authentication ceremony.
+	enroll(wbox, soft)
+	_, challenge = pkce_pair()
+	raw = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
+	wbox.store.save_webauthn_challenge(raw, EMAIL, "registration")
+	assertion = json.dumps(soft.get(raw, uv=True, origin=ORIGIN, sign_count=1))
+	url = "/auth/webauthn/authenticate/finish?" + authorize_query(challenge)
+	r = wbox.http.post(url, data=assertion, content_type="application/json")
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "This request expired, please try again."
+
+
+def test_authenticate_finish_unknown_credential_generic_and_logs(wbox, soft):
+	# soft's credential is never enrolled -> generic error + fail2ban line.
+	_, challenge = pkce_pair()
+	r = sign_in(wbox, soft, challenge)
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "Could not verify passkey."
+	assert wbox.deps.failed_logins == ["/auth/webauthn/authenticate/finish"]
+
+
+def test_authenticate_finish_uv_absent_rejected(wbox, soft):
+	enroll(wbox, soft)
+	_, challenge = pkce_pair()
+	r = sign_in(wbox, soft, challenge, user_verified=False)
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "Could not verify passkey."
+	assert wbox.deps.failed_logins == ["/auth/webauthn/authenticate/finish"]
+
+
+def test_authenticate_finish_wrong_origin_rejected(wbox, soft):
+	enroll(wbox, soft)
+	_, challenge = pkce_pair()
+	r = sign_in(wbox, soft, challenge, origin="https://evil.example.com")
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "Could not verify passkey."
+	assert wbox.deps.failed_logins == ["/auth/webauthn/authenticate/finish"]
+
+
+def test_authenticate_finish_counter_regression_rejected(wbox, soft):
+	enroll(wbox, soft, sign_count=5)
+	_, challenge = pkce_pair()
+	r = sign_in(wbox, soft, challenge, sign_count=3)  # regression from 5 -> 3
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "Could not verify passkey."
+	assert wbox.deps.failed_logins == ["/auth/webauthn/authenticate/finish"]
+
+
+def test_authenticate_finish_totp_user_skips_mfa(wbox, soft):
+	wbox.deps.add_user("carol@box.example.com", password="pw", totp="123456")
+	enroll(wbox, soft, email="carol@box.example.com")
+	_, challenge = pkce_pair()
+	r = sign_in(wbox, soft, challenge)
+	# A user-verified passkey is itself MFA: validate_mfa is never invoked, so a
+	# code is issued directly with no TOTP prompt and no failed login.
+	assert r.status_code == 200
+	target = r.get_json()["redirect"]
+	code = urllib.parse.parse_qs(urllib.parse.urlparse(target).query)["code"][0]
+	row = wbox.store.take_code(code)
+	assert row["user_email"] == "carol@box.example.com"
+	assert wbox.deps.failed_logins == []
