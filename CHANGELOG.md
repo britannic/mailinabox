@@ -13,6 +13,8 @@ Authentication:
 * The control panel now sends a strict Content-Security-Policy and Referrer-Policy.
 * Users with TOTP enabled should prefer Roundcube's "Sign in with SSO" button: OAuth is the only path that extends multi-factor protection to IMAP/SMTP (tokens are issued behind TOTP), while password-based mail logins remain single-factor.
 * Operator notes: expect one localhost introspection POST per OAuth mail login (briefly cached by Dovecot's auth cache) and roughly one token-endpoint refresh per active session per hour; expired/revoked rows are purged nightly. Tokens in `STORAGE_ROOT/auth/auth.sqlite` are stored SHA-256-hashed — rows identify sessions but can never be replayed.
+* Mail-in-a-Box now supports passkeys (WebAuthn/FIDO2) as a phishing-resistant, passwordless browser sign-in method alongside passwords and OAuth. Admins can enroll one or more passkeys from the control panel and then use a "Sign in with a passkey" button at the control panel and Roundcube SSO. A user-verified passkey counts as multi-factor on its own, so TOTP is skipped for passkey sign-ins; passwords remain valid everywhere, so removing all passkeys can never lock a user out.
+* Passkeys are feature-flagged with `auth.passkeys` (default `true`) in settings.yaml, read live on every request like `auth.legacy_basic`; setting it `false` disables the endpoints (they return 404) and hides the UI without a restart. Credentials and single-use challenges live in the root-only `STORAGE_ROOT/auth/auth.sqlite`; challenges expire after 120 seconds and are purged nightly, and failed passkey assertions feed the existing fail2ban jail. See docs/passkeys.md.
 
 Version 76 (May 24, 2026)
 -------------------------
