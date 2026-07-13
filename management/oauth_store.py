@@ -172,6 +172,39 @@ class OAuthStore:
 		rowcount, _ = self._write("UPDATE oauth_tokens SET revoked_at = ? WHERE user_email = ? AND revoked_at IS NULL", (now, user_email))
 		return rowcount
 
+	# --- WebAuthn challenges ---
+
+	def save_webauthn_challenge(self, raw_challenge, user_email, type, now=None):
+		# Store a single-use WebAuthn ceremony challenge. The challenge is the
+		# base64url of the raw nonce sent to the browser — a public value, not
+		# a secret (unlike codes/tokens), and py_webauthn's verify_* needs the
+		# raw bytes back, so it is stored verbatim rather than hashed. TTL 120s.
+		# The row's existence (correct type, unexpired, unconsumed) is the
+		# authoritative issue/single-use/anti-replay gate. user_email is the
+		# enrolling user for 'registration' and NULL for usernameless
+		# 'authentication' (sign-in).
+		now = _now(now)
+		self._write(
+			"INSERT INTO webauthn_challenges (challenge, user_email, type, expires_at) VALUES (?, ?, ?, ?)",
+			(raw_challenge, user_email, type, now + 120))
+
+	def take_webauthn_challenge(self, raw_challenge, type, now=None):
+		# Atomic single-use claim. Unlike take_code (which marks used_at and
+		# RETAINS the row for replay-family detection), a challenge is pure
+		# single-use: read the row to recover user_email, then a guarded DELETE
+		# is the only writer, so two concurrent redemptions cannot both win
+		# (loser sees rowcount==0). Returns the row dict (incl. user_email) on a
+		# winning claim, else None (unknown / wrong type / expired / already
+		# consumed). A wrong-type or expired take never consumes the row.
+		now = _now(now)
+		row = self._execute_one("SELECT * FROM webauthn_challenges WHERE challenge = ? AND type = ?", (raw_challenge, type))
+		if row is None:
+			return None
+		rowcount, _ = self._write("DELETE FROM webauthn_challenges WHERE challenge = ? AND type = ? AND expires_at > ?", (raw_challenge, type, now))
+		if rowcount == 1:
+			return dict(row)
+		return None
+
 	def purge(self, now=None, keep_seconds=7 * 86400):
 		# Nightly cleanup (management/daily_tasks.sh). Rows are kept for
 		# keep_seconds after they stop being live: codes after expiry, tokens

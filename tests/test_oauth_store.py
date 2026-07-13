@@ -309,3 +309,67 @@ def test_webauthn_schema_created(env):
 		return {tuple(r[2] for r in s.conn.execute("PRAGMA index_info(%s)" % name)) for name in names}  # noqa: UP031
 	assert ("user_email",) in indexed_column_sets("webauthn_credentials")
 	assert ("expires_at",) in indexed_column_sets("webauthn_challenges")
+
+
+
+def test_webauthn_challenge_roundtrip(store):
+	store.save_webauthn_challenge("chal-abc", "user@box.example.com", "registration", now=NOW)
+	row = store.take_webauthn_challenge("chal-abc", "registration", now=NOW + 10)
+	assert row is not None
+	assert row["challenge"] == "chal-abc"
+	assert row["user_email"] == "user@box.example.com"
+	assert row["type"] == "registration"
+	assert row["expires_at"] == NOW + 120  # TTL is now + 120
+
+
+def test_webauthn_challenge_authentication_user_email_null(store):
+	# Sign-in (authentication) challenges are usernameless: user_email is NULL.
+	store.save_webauthn_challenge("chal-auth", None, "authentication", now=NOW)
+	row = store.take_webauthn_challenge("chal-auth", "authentication", now=NOW + 1)
+	assert row is not None
+	assert row["user_email"] is None
+
+
+def test_webauthn_challenge_single_use(store):
+	store.save_webauthn_challenge("chal-once", "u@x", "registration", now=NOW)
+	assert store.take_webauthn_challenge("chal-once", "registration", now=NOW + 1) is not None
+	# A second redemption of the same challenge must fail — the row is gone
+	# (pure single-use: the atomic DELETE is the claim, no retained row).
+	assert store.take_webauthn_challenge("chal-once", "registration", now=NOW + 2) is None
+
+
+def test_webauthn_challenge_expired(store):
+	store.save_webauthn_challenge("chal-exp", "u@x", "registration", now=NOW)
+	# expires_at must be strictly greater than now; at NOW + 120 it is dead.
+	assert store.take_webauthn_challenge("chal-exp", "registration", now=NOW + 120) is None
+	# The expired take did NOT consume the row; a later take is still expired.
+	assert store.take_webauthn_challenge("chal-exp", "registration", now=NOW + 121) is None
+
+
+def test_webauthn_challenge_type_isolation(store):
+	# A registration challenge cannot satisfy an authentication take (§9.3).
+	store.save_webauthn_challenge("chal-typed", "u@x", "registration", now=NOW)
+	assert store.take_webauthn_challenge("chal-typed", "authentication", now=NOW + 1) is None
+	# The wrong-type take did not consume it; the correctly-typed take works.
+	assert store.take_webauthn_challenge("chal-typed", "registration", now=NOW + 1) is not None
+
+
+def test_webauthn_challenge_missing(store):
+	assert store.take_webauthn_challenge("never-saved", "authentication", now=NOW) is None
+
+
+def test_webauthn_challenge_concurrent_single_winner(store):
+	# The guarded DELETE is the atomic claim: concurrent takes of one
+	# challenge yield exactly one winner and no call raises.
+	store.save_webauthn_challenge("chal-race", "u@x", "authentication", now=NOW)
+
+	def take_it():
+		return store.take_webauthn_challenge("chal-race", "authentication", now=NOW + 1)
+
+	with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+		results = list(executor.map(lambda _: take_it(), range(50)))
+
+	winners = [r for r in results if r is not None]
+	assert len(winners) == 1
+	assert winners[0]["challenge"] == "chal-race"
+	assert winners[0]["user_email"] == "u@x"
