@@ -16,6 +16,18 @@ cd /root/mailinabox || { echo "miab-provision: /root/mailinabox missing"; exit 1
 # start.sh sources setup/test-mode.sh which fills in DISABLE_FIREWALL,
 # SKIP_NETWORK_CHECKS, NONINTERACTIVE, PUBLIC_IP, PRIMARY_HOSTNAME.
 if setup/start.sh; then
+	# Trust the box's self-signed TLS certificate system-wide inside the
+	# container. Server-side HTTPS calls the box makes to itself — e.g.
+	# Roundcube's OAuth token exchange, which Guzzle/cURL verifies against
+	# the system CA store — must pass verification here just as they do in
+	# production, where the box holds a real Let's Encrypt certificate.
+	source /etc/mailinabox.conf
+	if install -m 0644 "$STORAGE_ROOT/ssl/ssl_certificate.pem" /usr/local/share/ca-certificates/miab-selfsigned.crt \
+		&& update-ca-certificates; then
+		echo "miab-provision: trusted the box's self-signed certificate."
+	else
+		echo "miab-provision: WARNING: could not trust the box's self-signed certificate; server-side OAuth TLS verification will fail." >&2
+	fi
 	touch "$MARKER"
 	echo "miab-provision: setup completed; box is provisioned."
 else
