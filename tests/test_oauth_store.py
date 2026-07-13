@@ -394,3 +394,40 @@ def test_purge_folds_in_challenges(env):
 	# No codes/tokens exist, so purge()'s count is exactly the one expired challenge.
 	assert s.purge(now=NOW) == 1
 	assert s.conn.execute("SELECT COUNT(*) FROM webauthn_challenges").fetchone()[0] == 1
+
+
+# --- webauthn credentials (Task 3) ---
+
+CRED_ID = b"\x01\x02\x03cred-id-bytes"
+PUBKEY = b"\xa5\x01\x02\x03\x26cose-key-bytes"
+
+
+def test_add_and_get_webauthn_credentials(store):
+	rowid = store.add_webauthn_credential(
+		"alice@box.example.com", CRED_ID, PUBKEY, 0,
+		'["internal","hybrid"]', "00000000-0000-0000-0000-000000000000",
+		"Alice's YubiKey", now=NOW)
+	assert isinstance(rowid, int)
+	# Look up by the raw credential-id bytes.
+	row = store.get_webauthn_credential_by_id(CRED_ID)
+	assert row is not None
+	assert row["id"] == rowid
+	assert row["user_email"] == "alice@box.example.com"
+	assert row["credential_id"] == CRED_ID          # BLOB round-trips as bytes
+	assert isinstance(row["credential_id"], bytes)
+	assert row["public_key"] == PUBKEY
+	assert isinstance(row["public_key"], bytes)
+	assert row["sign_count"] == 0
+	assert row["transports"] == '["internal","hybrid"]'
+	assert row["aaguid"] == "00000000-0000-0000-0000-000000000000"
+	assert row["name"] == "Alice's YubiKey"
+	assert row["created_at"] == NOW
+	assert row["last_used_at"] is None
+	# Unknown credential id → None (never KeyError).
+	assert store.get_webauthn_credential_by_id(b"nope") is None
+	# get_webauthn_credentials is scoped to one user and returns a list of dicts.
+	store.add_webauthn_credential("bob@box.example.com", b"bob-cred", PUBKEY, 5, None, None, "Bob's phone", now=NOW + 1)
+	alice = store.get_webauthn_credentials("alice@box.example.com")
+	assert [c["credential_id"] for c in alice] == [CRED_ID]
+	assert store.get_webauthn_credentials("bob@box.example.com")[0]["name"] == "Bob's phone"
+	assert store.get_webauthn_credentials("nobody@box.example.com") == []

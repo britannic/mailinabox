@@ -84,6 +84,11 @@ class OAuthStore:
 		with self._lock:
 			return self.conn.execute(sql, params).fetchone()
 
+	def _execute_all(self, sql, params=()):
+		# Execute a SELECT query and return fetchall(), serializing with _lock.
+		with self._lock:
+			return self.conn.execute(sql, params).fetchall()
+
 	def _write(self, sql, params=()):
 		# Execute an INSERT/UPDATE/DELETE and return (rowcount, lastrowid), serializing with _lock.
 		with self._lock:
@@ -213,6 +218,29 @@ class OAuthStore:
 		now = _now(now)
 		rowcount, _ = self._write("DELETE FROM webauthn_challenges WHERE expires_at <= ?", (now,))
 		return rowcount
+
+	# --- webauthn credentials ---
+
+	def add_webauthn_credential(self, user_email, credential_id, public_key, sign_count, transports, aaguid, name, now=None):
+		# Persist a newly registered passkey. credential_id and public_key are
+		# raw bytes stored as BLOBs; transports is a JSON-array string or None.
+		# Returns the new row id.
+		now = _now(now)
+		_, lastrowid = self._write(
+			"INSERT INTO webauthn_credentials (user_email, credential_id, public_key, sign_count, transports, aaguid, name, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+			(user_email, credential_id, public_key, sign_count, transports, aaguid, name, now))
+		return lastrowid
+
+	def get_webauthn_credentials(self, user_email):
+		# All of one user's passkeys, oldest first, as row dicts.
+		rows = self._execute_all("SELECT * FROM webauthn_credentials WHERE user_email = ? ORDER BY created_at, id", (user_email,))
+		return [dict(r) for r in rows]
+
+	def get_webauthn_credential_by_id(self, credential_id):
+		# Look up a passkey by its raw credential-id bytes — usernameless sign-in
+		# has only the credential id to go on. Returns the row dict or None.
+		row = self._execute_one("SELECT * FROM webauthn_credentials WHERE credential_id = ?", (credential_id,))
+		return dict(row) if row is not None else None
 
 	def purge(self, now=None, keep_seconds=7 * 86400):
 		# Nightly cleanup (management/daily_tasks.sh). Rows are kept for
