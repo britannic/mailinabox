@@ -538,6 +538,7 @@ function finish_oauth_login(code, state) {
   if (!expected_state || !verifier || state !== expected_state) {
     // State mismatch: abort (possible CSRF or a stale return).
     show_modal_error("Login Failed", "Sign-in could not be completed. Please try again.");
+    sessionStorage.setItem("miab_login_failed", "1");  // show the manual button, don't auto-loop
     show_panel('login');
     show_hide_menus();
     return;
@@ -574,6 +575,7 @@ function finish_oauth_login(code, state) {
     })
     .catch(function() {
       show_modal_error("Login Failed", "Sign-in could not be completed. Please try again.");
+      sessionStorage.setItem("miab_login_failed", "1");  // show the manual button, don't auto-loop
       show_panel('login');
       show_hide_menus();
     });
