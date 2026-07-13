@@ -548,3 +548,25 @@ def test_authenticate_finish_issues_valid_code(wbox, soft):
 	assert row["code_challenge"] == challenge
 	assert row["code_challenge_method"] == "S256"
 	assert wbox.deps.failed_logins == []
+
+
+def test_authenticate_endpoints_404_when_flag_disabled(wbox, soft):
+	with open(os.path.join(wbox.env["STORAGE_ROOT"], "settings.yaml"), "w") as f:
+		f.write("auth:\n  passkeys: false\n")
+	assert wbox.http.post("/auth/webauthn/authenticate/begin").status_code == 404
+	enroll(wbox, soft)
+	r = wbox.http.post("/auth/webauthn/authenticate/finish", data="{}", content_type="application/json")
+	assert r.status_code == 404
+
+
+def test_authenticate_finish_bad_redirect_uri_fatal_no_code(wbox, soft):
+	enroll(wbox, soft)
+	_, challenge = pkce_pair()
+	r = sign_in(wbox, soft, challenge, redirect_uri="https://evil.example.com/")
+	# validate_authorize_request returns the 400 HTML fatal page (never a
+	# redirect, never a code) for an unregistered redirect_uri.
+	assert r.status_code == 400
+	assert "invalid redirect URI" in r.get_data(as_text=True)
+	assert r.get_json(silent=True) is None  # not the JSON {"redirect": ...} success shape
+	# A client-config error mirrors the password path: it is not a failed login.
+	assert wbox.deps.failed_logins == []

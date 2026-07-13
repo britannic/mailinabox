@@ -301,6 +301,15 @@ def init_webauthn(app, env, deps):
 			return _json_error("Could not verify passkey.")
 		store.update_webauthn_sign_count(cred_row["id"], new_count, now)
 		user_email = cred_row["user_email"]
+		# Enforce every authorize invariant except the discrete validate_mfa
+		# step (a user-verified passkey is itself MFA): unknown client_id/
+		# redirect_uri -> fatal (never a redirect), scope subset of
+		# client.allowed_scopes, mandatory PKCE-S256. Mirrors oauth_authorize,
+		# which returns this response as-is (a client-config error, not a
+		# failed login -- the ceremony itself already succeeded).
+		error_response = oauth_server.validate_authorize_request(p, env)
+		if error_response is not None:
+			return error_response
 		raw_code = secrets.token_urlsafe(32)
 		store.save_code(raw_code, p["client_id"], user_email, p["scope"], p["redirect_uri"], p["code_challenge"], "S256", now)
 		app.logger.info("passkey sign-in success: user=%s credential=%s client=%s", user_email, cred_row["id"], p["client_id"])
