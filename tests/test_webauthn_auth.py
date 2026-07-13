@@ -17,11 +17,17 @@ import json
 import os
 import pathlib
 import sys
+import time
+from types import SimpleNamespace
 
 import pytest
+from flask import Flask
+from flask.testing import FlaskClient
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "management"))
 
+import oauth_clients
+import oauth_server
 import webauthn_auth
 from oauth_store import OAuthStore, db_path
 
@@ -228,8 +234,6 @@ def test_softauth_authentication_uv_absent_rejected(env, store):
 
 
 def _make_app(env):
-	from flask import Flask
-
 	app = Flask("webauthn-test")
 	app.testing = True
 	webauthn_auth.init_webauthn(app, env, deps=None)
@@ -263,3 +267,144 @@ def test_endpoints_404_when_flag_disabled(env):
 def test_endpoint_stub_reachable_when_flag_enabled(env):
 	client = _make_app(env).test_client()  # no settings.yaml -> default enabled
 	assert client.post("/auth/webauthn/authenticate/begin").status_code == 501
+
+
+# ---------------------------------------------------------------------------
+# Task 5: registration ceremony (register/begin + register/finish)
+#
+# T4's own scaffolding stopped at the flag-gated 501 stubs above and did not
+# add a full wired-app fixture; the "wbox" fixture, FakeDeps, and HttpsTestClient
+# below are added here (T5) mirroring tests/test_oauth_server.py's `box`
+# fixture/FakeDeps exactly (duplicated rather than imported so this file has no
+# import-time coupling to test_oauth_server.py), so that Bearer-authenticated
+# ceremony tests have a real init_oauth + init_webauthn app to drive end to end.
+# T6/T7 reuse this fixture for the sign-in and credential-management routes.
+# ---------------------------------------------------------------------------
+
+
+class HttpsTestClient(FlaskClient):
+	# oauth_server's Authlib integration enforces a real HTTPS scheme
+	# (InsecureTransportError); drive every request in this file over https,
+	# same as nginx would present it on-box. Mirrors test_oauth_server.py.
+	def open(self, *args, **kwargs):
+		kwargs.setdefault("base_url", "https://" + HOST)
+		return super().open(*args, **kwargs)
+
+
+class FakeDeps:
+	# Mirrors tests/test_oauth_server.py's FakeDeps (the deps object daemon.py
+	# constructs) -- duplicated rather than imported for zero cross-file coupling.
+	def __init__(self):
+		self.users = {}
+		self.failed_logins = []
+
+	def add_user(self, email, password="swordfish", privileges=None, totp=None):
+		self.users[email] = {
+			"password": password,
+			"hash": "{SHA512-CRYPT}$6$salt$" + hashlib.sha256(email.encode()).hexdigest(),
+			"mfa": "[]" if totp is None else json.dumps([{"id": 1, "type": "totp"}]),
+			"totp": totp,
+			"privileges": privileges if privileges is not None else ["admin"],
+		}
+
+	def check_user_password(self, email, password):
+		u = self.users.get(email)
+		return u is not None and u["password"] == password
+
+	def get_mail_password(self, email):
+		u = self.users.get(email)
+		return u["hash"] if u else None
+
+	def get_mfa_state_json(self, email):
+		u = self.users.get(email)
+		return u["mfa"] if u else "[]"
+
+	def validate_mfa(self, email, totp_code):
+		u = self.users.get(email)
+		if u is None or u["totp"] is None:
+			return "ok"
+		if not totp_code:
+			return "missing-totp-token"
+		if totp_code != u["totp"]:
+			return "invalid-totp-token"
+		return "ok"
+
+	def get_user_privileges(self, email):
+		u = self.users.get(email)
+		return u["privileges"] if u else []
+
+	def log_failed_login(self, request):
+		self.failed_logins.append(request.path)
+
+
+@pytest.fixture
+def clock(monkeypatch):
+	state = {"now": 1_700_000_000.0}
+	monkeypatch.setattr(time, "time", lambda: state["now"])
+	return state
+
+
+@pytest.fixture
+def wbox(env, clock, monkeypatch):
+	# A fully-wired app (init_oauth + init_webauthn), for Bearer-authenticated
+	# WebAuthn ceremony tests. The client registry (panel/roundcube/system) is
+	# stubbed the same way test_oauth_server.py's `box` fixture does it, so a
+	# later task's sign-in ceremony (which calls validate_authorize_request,
+	# needing oauth_clients.get_client) can reuse this same fixture unchanged.
+	auth_dir = pathlib.Path(env["STORAGE_ROOT"], "auth")
+	(auth_dir / "roundcube_client_secret.txt").write_text("roundcube-secret-456\n", encoding="utf-8")
+	(auth_dir / "system.key").write_text("system-secret-789\n", encoding="utf-8")
+	clients = {
+		"panel": SimpleNamespace(client_id="panel", is_public=True, grant_types=frozenset({"authorization_code", "refresh_token"}), allowed_scopes=frozenset({"admin", "profile"}), redirect_uris=("https://" + HOST + "/admin",), secret_path=None),
+		"roundcube": SimpleNamespace(client_id="roundcube", is_public=False, grant_types=frozenset({"authorization_code", "refresh_token"}), allowed_scopes=frozenset({"mail", "profile"}), redirect_uris=("https://" + HOST + "/mail/index.php/login/oauth",), secret_path=str(auth_dir / "roundcube_client_secret.txt")),
+		"system": SimpleNamespace(client_id="system", is_public=False, grant_types=frozenset({"client_credentials"}), allowed_scopes=frozenset({"admin"}), redirect_uris=(), secret_path=str(auth_dir / "system.key")),
+	}
+	monkeypatch.setattr(oauth_clients, "get_client", lambda env_, client_id: clients.get(client_id))
+
+	deps = FakeDeps()
+	deps.add_user(EMAIL)
+
+	app = Flask("webauthn-full-test", template_folder=os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "management", "templates"))
+	app.testing = True
+	app.test_client_class = HttpsTestClient
+	oauth_server.init_oauth(app, env, deps)
+	webauthn_auth.init_webauthn(app, env, deps)
+
+	return SimpleNamespace(http=app.test_client(), app=app, env=env, deps=deps, store=oauth_server.current_store(env), clock=clock)
+
+
+def _register_attestation(options_json, *, user_verified=True, origin=None):
+	# Adapts tests/webauthn_softauth.py's SoftwareAuthenticator to a
+	# register(options_json, ...) convenience shape: T4's actual authenticator
+	# takes a bare challenge string plus uv/origin kwargs on .create() (there is
+	# no .register() method), so pull the challenge out of the begin route's
+	# options JSON and drive the authenticator against it directly. No edits to
+	# webauthn_softauth.py -- this only adapts call shape, not behavior.
+	challenge = json.loads(options_json)["challenge"]
+	authenticator = SoftwareAuthenticator(rp_id=HOST, origin=ORIGIN)
+	return authenticator.create(challenge, uv=user_verified, origin=origin)
+
+
+def _admin_headers(wbox, email):
+	# Mint a scope-'admin' access token the way the code-exchange grant does,
+	# carrying the current password/MFA fingerprint so validate_bearer accepts it.
+	ps = wbox.store.password_state(wbox.deps.get_mail_password(email), wbox.deps.get_mfa_state_json(email))
+	raw, _ = wbox.store.create_token("access", "panel", email, "admin profile", int(time.time()) + 3600, auth_time=int(time.time()), origin_code_hash="wa-origin", password_state=ps)
+	return {"Authorization": "Bearer " + raw}
+
+
+def test_register_begin_returns_options_and_stores_challenge(wbox):
+	r = wbox.http.post("/auth/webauthn/register/begin", headers=_admin_headers(wbox, "alice@box.example.com"))
+	assert r.status_code == 200
+	options = r.get_json()
+	assert options["rp"]["id"] == "box.example.com"
+	assert options["user"]["name"] == "alice@box.example.com"
+	assert "challenge" in options
+	# The challenge row is stored bound to the caller, typed 'registration'.
+	row = wbox.store.take_webauthn_challenge(options["challenge"], "registration")
+	assert row is not None
+	assert row["user_email"] == "alice@box.example.com"
+
+
+def test_register_begin_without_bearer_401(wbox):
+	assert wbox.http.post("/auth/webauthn/register/begin").status_code == 401

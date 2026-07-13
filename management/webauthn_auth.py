@@ -11,14 +11,17 @@
 # box-wide cryptography==37.0.2 pin. It requires pydantic v1 and cbor2<5.5,
 # both pinned alongside pyOpenSSL==22.0.0 in setup/management.sh.
 
+import base64
 import hashlib
 import hmac
+import json
 import logging
 import os
 import secrets
 
-from flask import abort, jsonify
+from flask import request, jsonify, Response, abort
 
+import oauth_server
 import utils
 import webauthn
 from webauthn.helpers import bytes_to_base64url, options_to_json
@@ -28,6 +31,7 @@ from webauthn.helpers.structs import (
 	AuthenticatorSelectionCriteria,
 	PublicKeyCredentialDescriptor,
 	PublicKeyCredentialUserEntity,
+	RegistrationCredential,
 	ResidentKeyRequirement,
 	UserVerificationRequirement,
 )
@@ -60,6 +64,38 @@ def user_handle(env, user_email, store):  # noqa: ARG001
 	# collision cryptographically negligible. `env` is unused today but kept in the
 	# signature so callers pass a consistent (env, user_email, store) triple.
 	return hmac.new(store.get_server_secret(), user_email.encode("utf-8"), hashlib.sha256).digest()
+
+
+def _bearer_admin_email(env, deps):
+	# Identity on these routes comes ONLY from the access token (blocker B3):
+	# they are not wrapped by @authorized_personnel_only, so request.user_email
+	# is unset. Require scope 'admin'; return the caller's email, or None.
+	header = request.headers.get("Authorization", "")
+	if not header.startswith("Bearer "):
+		return None
+	info = oauth_server.validate_bearer(env, header[len("Bearer ") :].strip(), oauth_server.SCOPE_ADMIN, deps)
+	if info is None or info["user_email"] is None:
+		return None
+	return info["user_email"]
+
+
+def _b64url_decode(value):
+	# WebAuthn encodes base64url WITHOUT padding; restore it before decoding.
+	return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+
+
+def _challenge_from_client_data(body):
+	# The browser echoes the server-issued challenge (base64url, no padding)
+	# inside clientDataJSON. The stored challenge row is keyed by that exact
+	# string, so recovering it here lets us both claim the single-use row and
+	# feed py_webauthn the raw expected-challenge bytes. Returns the base64url
+	# string, or None if the body is malformed.
+	try:
+		parsed = json.loads(_b64url_decode(body["response"]["clientDataJSON"]))
+		challenge = parsed["challenge"]
+	except (TypeError, KeyError, ValueError):
+		return None
+	return challenge if isinstance(challenge, str) else None
 
 
 def _registration_options(env, store, user_email):
@@ -128,7 +164,13 @@ def init_webauthn(app, env, deps):  # noqa: ARG001
 	@app.route("/auth/webauthn/register/begin", methods=["POST"])
 	def webauthn_register_begin():
 		_passkeys_enabled_or_404(env)
-		return jsonify({"error": "not implemented"}), 501  # body: T5
+		user_email = _bearer_admin_email(env, deps)
+		if user_email is None:
+			return Response("", 401, {"WWW-Authenticate": "Bearer"})
+		store = oauth_server.current_store(env)
+		options_json, raw_challenge = _registration_options(env, store, user_email)
+		store.save_webauthn_challenge(raw_challenge, user_email, "registration")
+		return Response(options_json, mimetype="application/json")
 
 	@app.route("/auth/webauthn/register/finish", methods=["POST"])
 	def webauthn_register_finish():
