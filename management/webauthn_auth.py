@@ -243,23 +243,16 @@ def _friendly_authenticator_name(aaguid):
 	return _AAGUID_NAMES.get(aaguid.lower(), "Passkey")
 
 
-def _passkeys_enabled_or_404(env):
-	# Shared feature-flag guard for every /auth/webauthn/* endpoint. When the flag
-	# is off the whole surface disappears (spec 9.13). T8 consolidates rate
-	# limiting here; T4 establishes the 404-when-disabled contract.
-	if not is_passkeys_enabled(env):
-		abort(404)
-
-
 def init_webauthn(app, env, deps):
-	# Registers the six WebAuthn routes on the Flask app, mirroring init_oauth.
+	# Registers the WebAuthn routes on the Flask app, mirroring init_oauth.
 	# Called from daemon.py right after init_oauth (T9). `deps` is consumed by the
-	# route bodies: registration (T5, done), sign-in (T6), management (T7).
-	# Every endpoint 404s when the feature flag is off.
+	# route bodies: registration (T5), sign-in (T6), management (T7). The single
+	# _passkeys_feature_flag_guard below (T8) 404s every /auth/webauthn/* request
+	# -- and every method on it -- when the flag is off; the begin-endpoint rate
+	# and outstanding-challenge guard runs after it.
 
 	@app.route("/auth/webauthn/register/begin", methods=["POST"])
 	def webauthn_register_begin():
-		_passkeys_enabled_or_404(env)
 		user_email = _bearer_admin_email(env, deps)
 		if user_email is None:
 			return Response("", 401, {"WWW-Authenticate": "Bearer"})
@@ -270,7 +263,6 @@ def init_webauthn(app, env, deps):
 
 	@app.route("/auth/webauthn/register/finish", methods=["POST"])
 	def webauthn_register_finish():
-		_passkeys_enabled_or_404(env)
 		user_email = _bearer_admin_email(env, deps)
 		if user_email is None:
 			return Response("", 401, {"WWW-Authenticate": "Bearer"})
@@ -319,7 +311,6 @@ def init_webauthn(app, env, deps):
 
 	@app.route("/auth/webauthn/authenticate/begin", methods=["POST"])
 	def webauthn_authenticate_begin():
-		_passkeys_enabled_or_404(env)
 		# Usernameless (discoverable-credential) sign-in: allowCredentials is
 		# empty; the authenticator picks a resident credential for this RP.
 		store = oauth_server.current_store(env)
@@ -329,7 +320,6 @@ def init_webauthn(app, env, deps):
 
 	@app.route("/auth/webauthn/authenticate/finish", methods=["POST"])
 	def webauthn_authenticate_finish():
-		_passkeys_enabled_or_404(env)
 		store = oauth_server.current_store(env)
 		# The OAuth request params are read ONLY from the query string (the
 		# ceremony fetch preserves the authorize query); the body carries only
@@ -401,7 +391,6 @@ def init_webauthn(app, env, deps):
 
 	@app.route("/auth/webauthn/credentials", methods=["GET"])
 	def webauthn_list_credentials():
-		_passkeys_enabled_or_404(env)
 		user_email = _bearer_admin_email(env, deps)
 		if user_email is None:
 			return Response("", 401, {"WWW-Authenticate": 'Bearer error="invalid_token"'})
@@ -421,7 +410,6 @@ def init_webauthn(app, env, deps):
 
 	@app.route("/auth/webauthn/credentials/<int:cred_id>", methods=["PATCH"])
 	def webauthn_rename_credential(cred_id):
-		_passkeys_enabled_or_404(env)
 		user_email = _bearer_admin_email(env, deps)
 		if user_email is None:
 			return Response("", 401, {"WWW-Authenticate": 'Bearer error="invalid_token"'})
@@ -438,7 +426,6 @@ def init_webauthn(app, env, deps):
 
 	@app.route("/auth/webauthn/credentials/<int:cred_id>", methods=["DELETE"])
 	def webauthn_delete_credential(cred_id):
-		_passkeys_enabled_or_404(env)
 		user_email = _bearer_admin_email(env, deps)
 		if user_email is None:
 			return Response("", 401, {"WWW-Authenticate": 'Bearer error="invalid_token"'})
@@ -450,3 +437,12 @@ def init_webauthn(app, env, deps):
 		store.delete_webauthn_credential(cred_id, user_email)
 		app.logger.info("Passkey revoked for %s (credential %s)", user_email, owned[cred_id]["credential_id"].hex()[:16])
 		return jsonify({"ok": True})
+
+	@app.before_request
+	def _passkeys_feature_flag_guard():
+		# THE single feature-flag gate for all /auth/webauthn/* endpoints
+		# (spec §6.2). Runs before routing, so when auth.passkeys is false every
+		# endpoint — and every method on it — 404s exactly like a route that does
+		# not exist. Registered first so it short-circuits ahead of the rate guard.
+		if request.path.startswith("/auth/webauthn/") and not is_passkeys_enabled(env):
+			abort(404)

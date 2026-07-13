@@ -781,3 +781,34 @@ def test_rate_limiter_fixed_window():
 	assert rl.check("203.0.113.5", now=now) is True
 	# Once the window rolls over, the same IP is allowed again.
 	assert rl.check("203.0.113.4", now=now + 60) is True
+
+
+@pytest.fixture
+def guardbox(tmp_path):
+	env = {"STORAGE_ROOT": str(tmp_path), "PRIMARY_HOSTNAME": "box.example.com"}
+	(tmp_path / "auth").mkdir(mode=0o700)
+	deps = SimpleNamespace(log_failed_login=lambda request: None)
+	app = Flask("webauthn-guard-test", template_folder=os.path.join(os.path.dirname(__file__), "..", "management", "templates"))
+	app.testing = True
+	webauthn_auth.init_webauthn(app, env, deps)
+	return SimpleNamespace(http=app.test_client(), app=app, env=env, store=oauth_server.current_store(env))
+
+
+def test_feature_flag_off_hides_entire_namespace(guardbox, monkeypatch):
+	# The single before_request guard 404s every /auth/webauthn/* request when
+	# the flag is off — including a wrong-method probe (which would otherwise be
+	# a 405), so the namespace is indistinguishable from absent.
+	monkeypatch.setattr(webauthn_auth, "is_passkeys_enabled", lambda env: False)
+	probes = [
+		("POST", "/auth/webauthn/register/begin"),
+		("POST", "/auth/webauthn/register/finish"),
+		("POST", "/auth/webauthn/authenticate/begin"),
+		("POST", "/auth/webauthn/authenticate/finish"),
+		("GET", "/auth/webauthn/credentials"),
+		("PATCH", "/auth/webauthn/credentials/1"),
+		("DELETE", "/auth/webauthn/credentials/1"),
+		("GET", "/auth/webauthn/register/begin"),  # POST-only route: must 404, not 405
+	]
+	for method, path in probes:
+		r = guardbox.http.open(path, method=method)
+		assert r.status_code == 404, (method, path, r.status_code)
