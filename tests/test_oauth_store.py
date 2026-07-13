@@ -272,3 +272,40 @@ def test_concurrent_take_code_single_winner(store):
 	for r in results:
 		if r is not None:
 			assert r.get("replayed") is True or r == successes[0]
+
+
+
+# --- WebAuthn schema + challenges (Task 2) ---
+
+
+def test_webauthn_schema_created(env):
+	s = OAuthStore(db_path(env))
+	tables = {r[0] for r in s.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+	assert {"webauthn_credentials", "webauthn_challenges"} <= tables
+	# Column name -> declared type must match spec §7 exactly.
+	cred_cols = {r[1]: r[2] for r in s.conn.execute("PRAGMA table_info(webauthn_credentials)")}
+	assert cred_cols == {
+		"id": "INTEGER",
+		"user_email": "TEXT",
+		"credential_id": "BLOB",
+		"public_key": "BLOB",
+		"sign_count": "INTEGER",
+		"transports": "TEXT",
+		"aaguid": "TEXT",
+		"name": "TEXT",
+		"created_at": "INTEGER",
+		"last_used_at": "INTEGER",
+	}
+	chal_cols = {r[1]: r[2] for r in s.conn.execute("PRAGMA table_info(webauthn_challenges)")}
+	assert chal_cols == {
+		"challenge": "TEXT",
+		"user_email": "TEXT",
+		"type": "TEXT",
+		"expires_at": "INTEGER",
+	}
+	# The hot-path lookups must be index-backed (index NAMES are incidental).
+	def indexed_column_sets(table):
+		names = [r[0] for r in s.conn.execute("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=?", (table,))]
+		return {tuple(r[2] for r in s.conn.execute("PRAGMA index_info(%s)" % name)) for name in names}  # noqa: UP031
+	assert ("user_email",) in indexed_column_sets("webauthn_credentials")
+	assert ("expires_at",) in indexed_column_sets("webauthn_challenges")

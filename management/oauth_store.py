@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, t
 CREATE INDEX IF NOT EXISTS idx_tokens_origin ON oauth_tokens (origin_code_hash);
 CREATE INDEX IF NOT EXISTS idx_tokens_user ON oauth_tokens (user_email, revoked_at);
 CREATE INDEX IF NOT EXISTS idx_codes_expires ON oauth_codes (expires_at);
+CREATE TABLE IF NOT EXISTS webauthn_credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, user_email TEXT NOT NULL, credential_id BLOB UNIQUE NOT NULL, public_key BLOB NOT NULL, sign_count INTEGER NOT NULL, transports TEXT, aaguid TEXT, name TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER);
+CREATE INDEX IF NOT EXISTS idx_webauthn_creds_user ON webauthn_credentials (user_email);
+CREATE TABLE IF NOT EXISTS webauthn_challenges (challenge TEXT PRIMARY KEY, user_email TEXT, type TEXT NOT NULL, expires_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_webauthn_chal_expires ON webauthn_challenges (expires_at);
 """
 
 
