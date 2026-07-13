@@ -555,7 +555,7 @@ def init_oauth(app, env, deps):
 		info = validate_bearer(env, header[len("Bearer "):].strip(), SCOPE_PROFILE, deps)
 		if info is None or info["user_email"] is None:
 			return Response("", 401, {"WWW-Authenticate": 'Bearer error="invalid_token"'})
-		return jsonify({"email": info["user_email"], "privileges": deps.get_user_privileges(info["user_email"])})
+		return jsonify({"sub": info["user_email"], "email": info["user_email"], "privileges": deps.get_user_privileges(info["user_email"])})
 
 	@app.route("/.well-known/oauth-authorization-server", methods=["GET"])
 	def oauth_metadata():

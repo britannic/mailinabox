@@ -240,7 +240,7 @@ def run_public_tests():
 	# 5. userinfo (scope profile).
 	status, _hdrs, body = http("GET", f"https://{host}/admin/oauth/userinfo", bearer=access)
 	info = json.loads(body) if status == 200 else {}
-	expect(status == 200 and info.get("email") == emailaddress and "privileges" in info, "userinfo returns email and privileges for a profile-scoped token")
+	expect(status == 200 and info.get("email") == emailaddress and info.get("sub") == emailaddress and "privileges" in info, "userinfo returns sub, email and privileges for a profile-scoped token")
 
 	# 6. Bearer access to the management API (meaningful for admin accounts only).
 	if "admin" in info.get("privileges", []):

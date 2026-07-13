@@ -58,7 +58,7 @@ one exception — it is served at the site root, without the `/admin` prefix.
 | `https://<HOST>/admin/oauth/authorize` | GET, POST | Authorization endpoint — renders the login form (GET) and, after validating credentials and a well-formed S256 code challenge, issues an authorization code (POST) |
 | `https://<HOST>/admin/oauth/token` | POST | Token endpoint — code exchange, refresh rotation, and `client_credentials` |
 | `https://<HOST>/admin/oauth/revoke` | POST | Token revocation (RFC 7009) |
-| `https://<HOST>/admin/oauth/userinfo` | GET | The signed-in user's email and privileges (Bearer token, `profile` scope) |
+| `https://<HOST>/admin/oauth/userinfo` | GET | The signed-in user's OIDC subject (`sub`), email, and privileges (Bearer token, `profile` scope) |
 | `https://<HOST>/.well-known/oauth-authorization-server` | GET | Authorization-server metadata (RFC 8414) |
 
 The **introspection** endpoint (RFC 7662) is intentionally *not* public.
@@ -83,7 +83,7 @@ and `code_challenge_methods_supported: [S256]`.
 |---|---|---|
 | `admin` | the control panel and management API (and local tooling) | `panel`, `system` |
 | `mail` | IMAP / SMTP submission (validated by Dovecot introspection) | `roundcube` |
-| `profile` | the UserInfo endpoint (email + privileges) | `panel`, `roundcube` |
+| `profile` | the UserInfo endpoint (`sub` + email + privileges) | `panel`, `roundcube` |
 
 A user-bound token with the `admin` scope additionally requires the user to hold
 the **admin privilege** at request time — losing admin invalidates access

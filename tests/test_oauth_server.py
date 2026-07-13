@@ -793,7 +793,7 @@ def test_userinfo_requires_profile_scope(box):
 	t = make_user_tokens(box, client_id="panel", scopes="admin profile")
 	r = box.http.get("/oauth/userinfo", headers={"Authorization": "Bearer " + t.access})
 	assert r.status_code == 200
-	assert r.get_json() == {"email": "alice@box.example.com", "privileges": ["admin"]}
+	assert r.get_json() == {"sub": "alice@box.example.com", "email": "alice@box.example.com", "privileges": ["admin"]}
 	t2 = make_user_tokens(box, client_id="panel", scopes="admin", origin="origin-ui-2")
 	r2 = box.http.get("/oauth/userinfo", headers={"Authorization": "Bearer " + t2.access})
 	assert r2.status_code == 401
