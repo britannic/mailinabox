@@ -527,3 +527,24 @@ def test_authenticate_begin_stores_challenge_and_returns_options(wbox):
 	row = wbox.store.take_webauthn_challenge(opts["challenge"], "authentication")
 	assert row is not None
 	assert row["user_email"] is None
+
+
+def test_authenticate_finish_issues_valid_code(wbox, soft):
+	enroll(wbox, soft)
+	_, challenge = pkce_pair()
+	r = sign_in(wbox, soft, challenge)
+	assert r.status_code == 200
+	target = r.get_json()["redirect"]
+	assert target.startswith(PANEL_REDIRECT + "?")
+	q = urllib.parse.parse_qs(urllib.parse.urlparse(target).query)
+	assert q["state"] == ["st123"]
+	# Identity is resolved from the credential row (alice), and the code is
+	# bound to exactly the query-string OAuth request.
+	row = wbox.store.take_code(q["code"][0])
+	assert row["user_email"] == EMAIL
+	assert row["client_id"] == "panel"
+	assert row["scopes"] == "admin profile"
+	assert row["redirect_uri"] == PANEL_REDIRECT
+	assert row["code_challenge"] == challenge
+	assert row["code_challenge_method"] == "S256"
+	assert wbox.deps.failed_logins == []

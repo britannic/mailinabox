@@ -246,7 +246,65 @@ def init_webauthn(app, env, deps):
 	@app.route("/auth/webauthn/authenticate/finish", methods=["POST"])
 	def webauthn_authenticate_finish():
 		_passkeys_enabled_or_404(env)
-		return jsonify({"error": "not implemented"}), 501  # body: T6 Step 8
+		store = oauth_server.current_store(env)
+		# The OAuth request params are read ONLY from the query string (the
+		# ceremony fetch preserves the authorize query); the body carries only
+		# the WebAuthn assertion -- hidden fields are never trusted (blocker B1).
+		p = oauth_server._authorize_request_params()
+		now = int(time.time())
+		try:
+			credential = AuthenticationCredential.parse_raw(request.get_data(as_text=True))
+			challenge_b64 = json.loads(credential.response.client_data_json)["challenge"]
+		except (ValueError, KeyError, TypeError) as exc:
+			app.logger.warning("passkey sign-in: malformed assertion: %s", exc)
+			deps.log_failed_login(request)
+			return _json_error("Could not verify passkey.")
+		# Single-use, typed, unexpired challenge row existence is the
+		# authoritative anti-replay gate; a replayed/expired/wrong-type finish
+		# claims nothing and gets None.
+		if store.take_webauthn_challenge(challenge_b64, "authentication", now) is None:
+			deps.log_failed_login(request)
+			return _json_error("This request expired, please try again.")
+		# Identity is resolved from the stored credential, never client input;
+		# an unknown credential yields the same generic error (no enumeration).
+		cred_row = store.get_webauthn_credential_by_id(credential.raw_id)
+		if cred_row is None:
+			deps.log_failed_login(request)
+			return _json_error("Could not verify passkey.")
+		try:
+			verification = webauthn.verify_authentication_response(
+				credential=credential,
+				expected_challenge=_b64url_decode(challenge_b64),
+				expected_rp_id=env["PRIMARY_HOSTNAME"],
+				expected_origin="https://" + env["PRIMARY_HOSTNAME"],
+				credential_public_key=cred_row["public_key"],
+				credential_current_sign_count=cred_row["sign_count"],
+				require_user_verification=True,
+			)
+		except Exception:  # noqa: BLE001 -- intentionally blind: any verify failure (bad
+			# signature, wrong RP/origin, UV absent, malformed assertion) must
+			# collapse to the SAME generic error (§11), no internal detail. This
+			# endpoint is unauthenticated sign-in, so every failure here also
+			# feeds fail2ban (unlike the Bearer-authenticated registration
+			# ceremony, where a failed attestation is the admin's own device).
+			app.logger.warning("passkey sign-in verification failed for credential %s", cred_row["id"])
+			deps.log_failed_login(request)
+			return _json_error("Could not verify passkey.")
+		# Signature-counter clone detection (defense in depth -- py_webauthn also
+		# rejects a regression internally). 0/0 means the authenticator does not
+		# report a counter and is allowed.
+		stored_count = cred_row["sign_count"]
+		new_count = verification.new_sign_count
+		if not (new_count == 0 and stored_count == 0) and new_count <= stored_count:
+			app.logger.warning("passkey sign-in rejected: sign-count regression for credential %s (stored=%d asserted=%d) -- possible clone", cred_row["id"], stored_count, new_count)
+			deps.log_failed_login(request)
+			return _json_error("Could not verify passkey.")
+		store.update_webauthn_sign_count(cred_row["id"], new_count, now)
+		user_email = cred_row["user_email"]
+		raw_code = secrets.token_urlsafe(32)
+		store.save_code(raw_code, p["client_id"], user_email, p["scope"], p["redirect_uri"], p["code_challenge"], "S256", now)
+		app.logger.info("passkey sign-in success: user=%s credential=%s client=%s", user_email, cred_row["id"], p["client_id"])
+		return jsonify({"redirect": oauth_server.build_code_redirect(p, raw_code)})
 
 	@app.route("/auth/webauthn/credentials", methods=["GET"])
 	def webauthn_list_credentials():
