@@ -11,7 +11,7 @@
 
 <p>To use an alias or any address besides your own login username in outbound mail, the sending user must be included as a permitted sender for the alias.</p>
 
-<form id="addalias-form" class="form-horizontal" role="form" onsubmit="do_add_alias(); return false;">
+<form id="addalias-form" class="form-horizontal" role="form">
   <div class="form-group">
     <div class="col-sm-offset-1 col-sm-11">
       <div id="alias_type_buttons" class="btn-group btn-group-xs">
@@ -56,8 +56,7 @@
             <input id="addaliasForwardsToNotAdvanced"
                    name="addaliasForwardsToDivToggle"
                    type="radio"
-                   checked
-                   onclick="$('#addaliasForwardsToDiv').toggle(false)">
+                   checked>
             Any mail user listed in the Forwards To box can send mail claiming to be from
             <span class="regularalias">the alias address</span>
             <span class="catchall domainalias">any address on the alias domain</span>.
@@ -67,8 +66,7 @@
           <label for="addaliasForwardsToAdvanced">
             <input id="addaliasForwardsToAdvanced"
                    name="addaliasForwardsToDivToggle"
-                   type="radio"
-                   onclick="$('#addaliasForwardsToDiv').toggle(true)">
+                   type="radio">
             I&rsquo;ll enter the mail users that can send mail claiming to be from
             <span class="regularalias">the alias address</span>
             <span class="catchall domainalias">any address on the alias domain</span>.
@@ -83,7 +81,7 @@
   <div class="form-group">
     <div class="col-sm-offset-1 col-sm-11">
       <button id="add-alias-button" type="submit" class="btn btn-primary">Add Alias</button>
-      <button id="alias-cancel" class="btn btn-default hidden" onclick="aliases_reset_form(); return false;">Cancel</button>
+      <button id="alias-cancel" type="button" class="btn btn-default hidden">Cancel</button>
     </div>
   </div>
 </form>
@@ -108,10 +106,10 @@
   <table>
   <tr id="alias-template">
     <td class='actions'>
-        <a href="#" onclick="aliases_edit(this); scroll_top(); return false;" class='edit' title="Edit Alias">
+        <a href="#" class='edit' title="Edit Alias">
           <span class="glyphicon glyphicon-pencil"></span>
         </a>
-        <a href="#" onclick="aliases_remove(this); return false;" class='remove' title="Remove Alias">
+        <a href="#" class='remove' title="Remove Alias">
           <span class="glyphicon glyphicon-trash"></span>
         </a>
     </td>
@@ -160,7 +158,7 @@ curl -X POST -d "address=new_alias@mydomail.com" https://{{hostname}}/admin/mail
 </pre>
 
 
-<script>
+<script nonce="{{ csp_nonce }}">
 function show_aliases() {
   $('#alias_table tbody').html("<tr><td colspan='2' class='text-muted'>Loading...</td></tr>")
   api(
@@ -316,4 +314,14 @@ function scroll_top() {
             scrollTop: $("#panel_aliases").offset().top
         }, 1000);
 }
+
+$(function() {
+  $('#addalias-form').on('submit', function() { do_add_alias(); return false; });
+  $('#addaliasForwardsToNotAdvanced').on('click', function() { $('#addaliasForwardsToDiv').toggle(false); });
+  $('#addaliasForwardsToAdvanced').on('click', function() { $('#addaliasForwardsToDiv').toggle(true); });
+  $('#alias-cancel').on('click', function() { aliases_reset_form(); return false; });
+  // Rows are cloned from #alias-template into #alias_table; use delegated bindings.
+  $('#alias_table').on('click', 'a.edit', function() { aliases_edit(this); scroll_top(); return false; });
+  $('#alias_table').on('click', 'a.remove', function() { aliases_remove(this); return false; });
+});
 </script>

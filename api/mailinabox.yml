@@ -8,7 +8,7 @@ info:
     This API is documented in [**OpenAPI format**](http://spec.openapis.org/oas/v3.0.3).
     ([View the full HTTP specification](https://raw.githubusercontent.com/mail-in-a-box/mailinabox/api-spec/api/mailinabox.yml).)
 
-    All endpoints are relative to `https://{host}/admin` and are secured with [`Basic Access` authentication](https://en.wikipedia.org/wiki/Basic_access_authentication). If you have multi-factor authentication enabled, authentication with a `user:password` combination will fail unless a valid OTP is supplied via the `x-auth-token` header. Authentication via a `user:user_key` pair is possible without the header being present.
+    All endpoints are relative to `https://{host}/admin`. The primary authentication scheme is an OAuth 2.0 Bearer access token supplied in the `Authorization` header (see the `/oauth/token` and `/oauth/authorize` endpoints). [`Basic Access` authentication](https://en.wikipedia.org/wiki/Basic_access_authentication) remains supported as a deprecated legacy option that can be disabled by setting `auth.legacy_basic: false` in `settings.yaml`. If you have multi-factor authentication enabled, Basic authentication with a `user:password` combination will fail unless a valid OTP is supplied via the `x-auth-token` header. Authentication via a `user:user_key` pair is possible without the header being present.
   contact:
     name: Mail-in-a-Box support
     url: https://mailinabox.email/
@@ -29,10 +29,14 @@ servers:
         default: box.example.com
         description: The API hostname.
 security:
+  - bearerAuth: []
   - basicAuth: []
 tags:
   - name: User
     description: Endpoints related to user authentication.
+  - name: OAuth
+    description: |
+      OAuth 2.0 authorization server endpoints (RFC 6749, 6750, 7009, 8414). Used to obtain and manage the Bearer access tokens that are the primary authentication scheme for all other endpoints. The server also publishes RFC 8414 metadata at `https://{host}/.well-known/oauth-authorization-server` (outside the `/admin` prefix, so not listed as a path here).
   - name: Mail
     description: |
       Mail operations, which include getting all users, getting all aliases, adding/updating/removing users and aliases and getting all mail domains.
@@ -1812,12 +1816,252 @@ paths:
             text/html:
               schema:
                 type: string
+  /oauth/authorize:
+    get:
+      tags:
+        - OAuth
+      summary: OAuth 2.0 authorization endpoint (interactive login form)
+      description: |
+        Serves the server-rendered login form for the authorization-code + PKCE flow (RFC 6749 / RFC 7636).
+        Only the fixed first-party clients (`panel`, `roundcube`) are accepted; `redirect_uri` is matched
+        exactly against the client registry and `code_challenge_method` must be `S256` for all clients.
+        The form POSTs the user's credentials (plus a `totp_token` field when the account has TOTP enrolled)
+        back to this same URL; on success the browser is redirected to `redirect_uri` with `code` and `state`
+        query parameters. An invalid `client_id` or `redirect_uri` renders a 400 error page and never redirects.
+      operationId: oauthAuthorize
+      security: []
+      parameters:
+        - name: response_type
+          in: query
+          required: true
+          schema:
+            type: string
+            enum:
+              - code
+        - name: client_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: redirect_uri
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: scope
+          in: query
+          required: true
+          schema:
+            type: string
+            example: admin profile
+        - name: state
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: code_challenge
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: code_challenge_method
+          in: query
+          required: true
+          schema:
+            type: string
+            enum:
+              - S256
+      responses:
+        200:
+          description: Login form
+          content:
+            text/html:
+              schema:
+                type: string
+        302:
+          description: Successful authorization; redirect to `redirect_uri` with `code` and `state`.
+        400:
+          description: Invalid `client_id` or `redirect_uri` (never redirected).
+          content:
+            text/html:
+              schema:
+                type: string
+  /oauth/token:
+    post:
+      tags:
+        - OAuth
+      summary: OAuth 2.0 token endpoint
+      description: |
+        Issues tokens for the `authorization_code` (PKCE required), `refresh_token` and `client_credentials`
+        grants (RFC 6749). Confidential clients authenticate with `client_secret_basic` or `client_secret_post`;
+        client credentials presented as URL query parameters are rejected with `invalid_request`. Refresh tokens
+        rotate on every use and reuse of a rotated-out refresh token revokes its entire chain. Requested scopes
+        must be a subset of the originally authorized scopes (`invalid_scope` otherwise). Errors follow RFC 6749 §5.2.
+      operationId: oauthToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                grant_type:
+                  type: string
+                  enum:
+                    - authorization_code
+                    - refresh_token
+                    - client_credentials
+                client_id:
+                  type: string
+                client_secret:
+                  type: string
+                code:
+                  type: string
+                redirect_uri:
+                  type: string
+                code_verifier:
+                  type: string
+                refresh_token:
+                  type: string
+                scope:
+                  type: string
+              required:
+                - grant_type
+      x-codeSamples:
+        - lang: curl
+          source: |
+            curl -X POST "https://{host}/admin/oauth/token" \
+              -d "grant_type=client_credentials" \
+              -d "client_id=system" \
+              -d "client_secret=$(sudo cat /var/lib/mailinabox/api.key)" \
+              -d "scope=admin"
+      responses:
+        200:
+          description: Token response (RFC 6749 §5.1)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                  token_type:
+                    type: string
+                    example: Bearer
+                  expires_in:
+                    type: integer
+                    example: 3600
+                  refresh_token:
+                    type: string
+                    description: Present for the `authorization_code` and `refresh_token` grants only.
+                  scope:
+                    type: string
+                    example: admin profile
+        400:
+          description: OAuth error (`invalid_request`, `invalid_grant`, `invalid_scope`, `unsupported_grant_type`, ...)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+        401:
+          description: Client authentication failed (`invalid_client`).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+  /oauth/revoke:
+    post:
+      tags:
+        - OAuth
+      summary: Revoke a token (RFC 7009)
+      description: |
+        Revokes an access or refresh token. Revoking a refresh token revokes its entire rotation family.
+        Confidential clients must authenticate (`client_secret_basic` or `client_secret_post`); the public
+        `panel` client may revoke its own tokens without a secret. Per RFC 7009, unknown tokens still
+        return 200.
+      operationId: oauthRevoke
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                token:
+                  type: string
+                token_type_hint:
+                  type: string
+                  enum:
+                    - access_token
+                    - refresh_token
+                client_id:
+                  type: string
+                client_secret:
+                  type: string
+              required:
+                - token
+      responses:
+        200:
+          description: Token revoked (or was already unknown/revoked).
+  /oauth/userinfo:
+    get:
+      tags:
+        - OAuth
+      summary: Identity of the token's user
+      description: |
+        Returns the authenticated user's email address and privilege list. Requires a Bearer access token
+        carrying the `profile` scope.
+      operationId: oauthUserinfo
+      security:
+        - bearerAuth: []
+      responses:
+        200:
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  email:
+                    type: string
+                    format: email
+                  privileges:
+                    type: array
+                    items:
+                      type: string
+                      example: admin
+        401:
+          description: Missing, expired, revoked or wrongly-scoped token.
 components:
   securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        OAuth 2.0 Bearer access token (RFC 6750) — the primary authentication scheme.
+
+        Obtain a token from the `/oauth/token` endpoint: interactive users use the
+        authorization-code + PKCE flow through `/oauth/authorize`; local tooling uses the
+        `client_credentials` grant with client `system` and the contents of
+        `/var/lib/mailinabox/api.key` as the client secret. Access to the management API
+        requires the `admin` scope, and user-bound tokens additionally require the user
+        to hold the `admin` privilege at the time of the request.
     basicAuth:
       type: http
       scheme: basic
       description: |
+        **DEPRECATED (legacy).** Retained for backward compatibility; prefer `bearerAuth`.
+        Every use is logged with a deprecation warning, and this scheme can be disabled
+        entirely by setting `auth.legacy_basic: false` in `settings.yaml`.
+
         Credentials can be supplied using the `Authorization` header in
         format `Authorization: Basic {access-token}`.
 

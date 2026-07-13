@@ -99,9 +99,12 @@ fi
 # Require that passwords are sent over SSL only, and allow the usual IMAP authentication mechanisms.
 # The LOGIN mechanism is supposedly for Microsoft products like Outlook to do SMTP login (I guess
 # since we're using Dovecot to handle SMTP authentication?).
+# OAUTHBEARER (RFC 7628) and XOAUTH2 authenticate with OAuth access tokens
+# issued by the management daemon; they are validated by the oauth2 passdb
+# configured in setup/mail-users.sh via RFC 7662 token introspection.
 tools/editconf.py /etc/dovecot/conf.d/10-auth.conf \
 	disable_plaintext_auth=yes \
-	"auth_mechanisms=plain login"
+	"auth_mechanisms=plain login oauthbearer xoauth2"
 
 # Enable SSL, specify the location of the SSL certificate and private key files.
 # Use Mozilla's "Intermediate" recommendations at https://ssl-config.mozilla.org/#server=dovecot&server-version=2.2.33&config=intermediate&openssl-version=1.1.1,

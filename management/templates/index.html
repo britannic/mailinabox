@@ -90,6 +90,16 @@
       }
         </style>
         <link rel="stylesheet" href="/admin/assets/bootstrap/css/bootstrap-theme.min.css">
+
+        <!-- Load jQuery and Bootstrap's JS in <head>, before the body's inline
+             script blocks. Many of those blocks live in Jinja-included panels
+             that run at parse time and use jQuery (e.g. login.html registers its
+             submit handler via a jQuery ready callback). If jQuery were loaded at
+             the end of <body> instead, every such block would throw
+             "$ is not defined" and no event handler — including the login form's —
+             would ever bind, leaving the whole control panel non-functional. -->
+        <script nonce="{{ csp_nonce }}" src="/admin/assets/jquery.min.js"></script>
+        <script nonce="{{ csp_nonce }}" src="/admin/assets/bootstrap/js/bootstrap.min.js"></script>
     </head>
     <body>
 
@@ -138,7 +148,7 @@
             <li><a href="#web" class="if-logged-in-admin">Web</a></li>
           </ul>
           <ul class="nav navbar-nav navbar-right">
-            <li class="if-logged-in"><a href="#" onclick="do_logout(); return false;" style="color: white">Log out</a></li>
+            <li class="if-logged-in"><a href="#" id="nav-logout" style="color: white">Log out</a></li>
           </ul>
         </div><!--/.navbar-collapse -->
       </div>
@@ -233,10 +243,7 @@
           </div>
         </div>
 
-        <script src="/admin/assets/jquery.min.js"></script>
-        <script src="/admin/assets/bootstrap/js/bootstrap.min.js"></script>
-
-        <script>
+        <script nonce="{{ csp_nonce }}">
 var global_modal_state = null;
 var global_modal_funcs = null;
 
@@ -306,7 +313,7 @@ function show_modal_confirm(title, question, verb, yes_callback, cancel_callback
 
 var ajax_num_executing_requests = 0;
 function ajax_with_indicator(options) {
-  setTimeout("if (ajax_num_executing_requests > 0) $('#ajax_loading_indicator').fadeIn()", 100);
+  setTimeout(function() { if (ajax_num_executing_requests > 0) $('#ajax_loading_indicator').fadeIn(); }, 100);
   function hide_loading_indicator() {
     ajax_num_executing_requests--;
     if (ajax_num_executing_requests == 0)
@@ -334,37 +341,87 @@ function ajax_with_indicator(options) {
 }
 
 var api_credentials = null;
-function api(url, method, data, callback, callback_error, headers) {
-  // from http://www.webtoolkit.info/javascript-base64.html
-  function base64encode(input) {
-    _keyStr = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
-    var output = "";
-    var chr1, chr2, chr3, enc1, enc2, enc3, enc4;
-    var i = 0;
-    while (i < input.length) {
-        chr1 = input.charCodeAt(i++);
-        chr2 = input.charCodeAt(i++);
-        chr3 = input.charCodeAt(i++);
-        enc1 = chr1 >> 2;
-        enc2 = ((chr1 & 3) << 4) | (chr2 >> 4);
-        enc3 = ((chr2 & 15) << 2) | (chr3 >> 6);
-        enc4 = chr3 & 63;
-        if (isNaN(chr2)) {
-            enc3 = enc4 = 64;
-        } else if (isNaN(chr3)) {
-            enc4 = 64;
-        }
-        output = output +
-        _keyStr.charAt(enc1) + _keyStr.charAt(enc2) +
-        _keyStr.charAt(enc3) + _keyStr.charAt(enc4);
-    }
+var api_credentials_storage = 'session'; // 'session', or 'local' when Remember-me was checked
+var oauth_refresh_in_progress = null;
 
-    return output;
+function save_credentials() {
+  if (typeof sessionStorage == 'undefined' || typeof localStorage == 'undefined') return;
+  var s = JSON.stringify(api_credentials);
+  if (api_credentials_storage == 'local') {
+    localStorage.setItem("miab-cp-oauth", s);
+    sessionStorage.removeItem("miab-cp-oauth");
+  } else {
+    sessionStorage.setItem("miab-cp-oauth", s);
+    localStorage.removeItem("miab-cp-oauth");
+  }
+}
+
+function restore_credentials() {
+  try {
+    if (typeof sessionStorage != 'undefined' && sessionStorage.getItem("miab-cp-oauth")) {
+      api_credentials = JSON.parse(sessionStorage.getItem("miab-cp-oauth"));
+      api_credentials_storage = 'session';
+    } else if (typeof localStorage != 'undefined' && localStorage.getItem("miab-cp-oauth")) {
+      api_credentials = JSON.parse(localStorage.getItem("miab-cp-oauth"));
+      api_credentials_storage = 'local';
+    }
+  } catch (_) {
+    api_credentials = null;
+  }
+}
+
+function oauth_refresh() {
+  // Silently rotate the refresh token and get a fresh access token. Returns a
+  // Promise resolving to true on success. Concurrent callers share one request.
+  if (!api_credentials || !api_credentials.refresh_token) return Promise.resolve(false);
+  if (oauth_refresh_in_progress) return oauth_refresh_in_progress;
+  oauth_refresh_in_progress = fetch("/admin/oauth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: "grant_type=refresh_token&client_id=panel&refresh_token=" + encodeURIComponent(api_credentials.refresh_token)
+  }).then(function(res) { return res.ok ? res.json() : null; })
+    .then(function(tok) {
+      oauth_refresh_in_progress = null;
+      if (!tok || !tok.access_token) return false;
+      api_credentials.access_token = tok.access_token;
+      if (tok.refresh_token) api_credentials.refresh_token = tok.refresh_token;
+      save_credentials();
+      return true;
+    })
+    .catch(function() {
+      oauth_refresh_in_progress = null;
+      return false;
+    });
+  return oauth_refresh_in_progress;
+}
+
+function return_to_login() {
+  var p = current_panel;
+  clear_credentials();
+  show_panel('login');
+  show_hide_menus();
+  switch_back_to_panel = p;
+}
+
+function api(url, method, data, callback, callback_error, headers, is_retry) {
+  function default_error(text, xhr) {
+    if (xhr.status != 401 && xhr.status != 403) // else handled by handle_unauthorized
+      show_modal_error("Error", "Something went wrong, sorry.")
   }
 
-  function default_error(text, xhr) {
-    if (xhr.status != 403) // else handled below
-      show_modal_error("Error", "Something went wrong, sorry.")
+  function handle_unauthorized(xhr) {
+    // The access token expired or was revoked. Try ONE silent refresh, then
+    // retry the request once; if that fails, drop to the login panel.
+    if (is_retry || !api_credentials || !api_credentials.refresh_token) {
+      return_to_login();
+      return;
+    }
+    oauth_refresh().then(function(ok) {
+      if (ok)
+        api(url, method, data, callback, callback_error, headers, true);
+      else
+        return_to_login();
+    });
   }
 
   ajax_with_indicator({
@@ -378,25 +435,20 @@ function api(url, method, data, callback, callback_error, headers) {
     mimeType: typeof data == "string" ? "text/plain; charset=ascii" : null,
 
     beforeSend: function(xhr) {
-      // We don't store user credentials in a cookie to avoid the hassle of CSRF
-      // attacks. The Authorization header only gets set in our AJAX calls triggered
-      // by user actions.
-      if (api_credentials)
-        xhr.setRequestHeader(
-          'Authorization',
-          'Basic ' + base64encode(api_credentials.username + ':' + api_credentials.session_key));
+      // We don't store tokens in a cookie to avoid the hassle of CSRF attacks.
+      // The Authorization header only gets set in our AJAX calls triggered by
+      // user actions.
+      if (api_credentials && api_credentials.access_token)
+        xhr.setRequestHeader('Authorization', 'Bearer ' + api_credentials.access_token);
     },
     success: callback,
-    error: callback_error || default_error,
+    error: function(text, xhr) {
+      if (xhr && (xhr.status == 401 || xhr.status == 403)) return; // handled by handle_unauthorized
+      (callback_error || default_error)(text, xhr);
+    },
     statusCode: {
-      403: function(xhr) {
-        // Credentials are no longer valid. Try to login again.
-        var p = current_panel;
-        clear_credentials();
-        show_panel('login');
-        show_hide_menus();
-        switch_back_to_panel = p;
-      }
+      401: handle_unauthorized,
+      403: handle_unauthorized
     }
   })
 }
@@ -405,17 +457,29 @@ var current_panel = null;
 var switch_back_to_panel = null;
 
 function clear_credentials() {
-  // Forget the token.
+  // Forget the tokens (also removes any pre-OAuth "miab-cp-credentials" left
+  // over from before the upgrade).
   api_credentials = null;
-  if (typeof localStorage != 'undefined')
+  if (typeof localStorage != 'undefined') {
+    localStorage.removeItem("miab-cp-oauth");
     localStorage.removeItem("miab-cp-credentials");
-  if (typeof sessionStorage != 'undefined')
+  }
+  if (typeof sessionStorage != 'undefined') {
+    sessionStorage.removeItem("miab-cp-oauth");
     sessionStorage.removeItem("miab-cp-credentials");
+  }
 }
 
 function do_logout() {
-  // Clear the session from the backend.
-  api("/logout", "POST");
+  // Revoke the refresh-token chain server-side (RFC 7009; the panel is a public
+  // client so no secret is sent), then clear local storage regardless.
+  if (api_credentials && api_credentials.refresh_token) {
+    fetch("/admin/oauth/revoke", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "token=" + encodeURIComponent(api_credentials.refresh_token) + "&token_type_hint=refresh_token&client_id=panel"
+    }).catch(function() {});
+  }
 
   // Remove locally stored credentials
   clear_credentials();
@@ -454,15 +518,73 @@ window.onhashchange = function() {
   show_panel(panelid);
 };
 
-$(function() {
-  // Recall saved user credentials.
-  try {
-    if (typeof sessionStorage != 'undefined' && sessionStorage.getItem("miab-cp-credentials"))
-      api_credentials = JSON.parse(sessionStorage.getItem("miab-cp-credentials"));
-    else if (typeof localStorage != 'undefined' && localStorage.getItem("miab-cp-credentials"))
-      api_credentials = JSON.parse(localStorage.getItem("miab-cp-credentials"));
-  } catch (_) {
+function finish_oauth_login(code, state) {
+  // We are back from /admin/oauth/authorize with ?code=...&state=....
+  var expected_state = sessionStorage.getItem("miab_oauth_state");
+  var verifier = sessionStorage.getItem("miab_pkce_verifier");
+  var remember = sessionStorage.getItem("miab_oauth_remember") == "1";
+  sessionStorage.removeItem("miab_oauth_state");
+  sessionStorage.removeItem("miab_pkce_verifier");
+  sessionStorage.removeItem("miab_oauth_remember");
+
+  // Scrub code/state out of the URL and browser history immediately.
+  history.replaceState(null, "", "/admin");
+
+  if (!expected_state || !verifier || state !== expected_state) {
+    // State mismatch: abort (possible CSRF or a stale return).
+    show_modal_error("Login Failed", "Sign-in could not be completed. Please try again.");
+    show_panel('login');
+    show_hide_menus();
+    return;
   }
+
+  fetch("/admin/oauth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: "grant_type=authorization_code&client_id=panel"
+      + "&redirect_uri=" + encodeURIComponent(window.location.origin + "/admin")
+      + "&code=" + encodeURIComponent(code)
+      + "&code_verifier=" + encodeURIComponent(verifier)
+  }).then(function(res) { return res.json().then(function(body) { return { ok: res.ok, body: body }; }); })
+    .then(function(r) {
+      if (!r.ok || !r.body.access_token) throw new Error("token exchange failed");
+      // Fetch identity + privileges before committing the login.
+      return fetch("/admin/oauth/userinfo", { headers: { "Authorization": "Bearer " + r.body.access_token } })
+        .then(function(res2) { if (!res2.ok) throw new Error("userinfo failed"); return res2.json(); })
+        .then(function(userinfo) {
+          api_credentials = {
+            username: userinfo.email,
+            access_token: r.body.access_token,
+            refresh_token: r.body.refresh_token,
+            privileges: userinfo.privileges
+          };
+          api_credentials_storage = remember ? 'local' : 'session';
+          save_credentials();
+          show_hide_menus();
+          if (window.location.hash)
+            show_panel(window.location.hash.substring(1));
+          else
+            show_panel(!switch_back_to_panel || switch_back_to_panel == "login" ? 'welcome' : switch_back_to_panel);
+        });
+    })
+    .catch(function() {
+      show_modal_error("Login Failed", "Sign-in could not be completed. Please try again.");
+      show_panel('login');
+      show_hide_menus();
+    });
+}
+
+$(function() {
+  $('#nav-logout').on('click', function() { do_logout(); return false; });
+  // OAuth redirect return?
+  var params = new URLSearchParams(window.location.search);
+  if (params.get("code") && params.get("state")) {
+    finish_oauth_login(params.get("code"), params.get("state"));
+    return;
+  }
+
+  // Recall saved user credentials.
+  restore_credentials();
 
   // Toggle menu state.
   show_hide_menus();

@@ -11,7 +11,7 @@
 <h3>Provision certificates</h3>
 
 <div id="ssl_provision_p" style="display: none; margin-top: 1.5em">
-  <button onclick='return provision_tls_cert();' class='btn btn-primary' style="float: left; margin: 0 1.5em 1em 0;">Provision</button>
+  <button id="ssl_provision_button" type="button" class='btn btn-primary' style="float: left; margin: 0 1.5em 1em 0;">Provision</button>
   <p>A TLS certificate can be automatically provisioned from <a href="https://letsencrypt.org/" target="_blank">Let&rsquo;s Encrypt</a>, a free TLS certificate provider, for:<br>
   <span class="text-primary"></span></p>
 </div>
@@ -44,13 +44,13 @@
 
 <p>Which domain are you getting a certificate for?</p>
 
-<p><select id="ssldomain" onchange="show_csr()" class="form-control" style="width: auto"></select></p>
+<p><select id="ssldomain" class="form-control" style="width: auto"></select></p>
 
 <p>(A multi-domain or wildcard certificate will be automatically applied to any domains it is valid for besides the one you choose above.)</p>
 
 <p>What country are you in? This is required by some TLS certificate providers. You may leave this blank if you know your TLS certificate provider doesn't require it.</p>
 
-<p><select id="sslcc" onchange="show_csr()" class="form-control" style="width: auto">
+<p><select id="sslcc" class="form-control" style="width: auto">
 	<option value="">(Select)</option>
 	{% for code, name in csr_country_codes %}
 		<option value="{{code}}">{{name}}</option>
@@ -74,10 +74,10 @@
 
   <p>After you paste in the information, click the install button.</p>
 
-  <button class="btn-primary" onclick="install_cert()">Install</button>
+  <button id="ssl_install_button" type="button" class="btn-primary">Install</button>
 </div>
 
-<script>
+<script nonce="{{ csp_nonce }}">
 function show_tls(keep_provisioning_shown) {
  api(
     "/ssl/status",
@@ -101,7 +101,7 @@ function show_tls(keep_provisioning_shown) {
       $('#ssldomain').html('<option value="">(select)</option>');
       $('#ssl_domains').show();
       for (var i = 0; i < domains.length; i++) {
-        var row = $("<tr><th scope='row' class='domain'><a href=''></a></th><td class='status'></td> <td class='actions'><a href='#' onclick='return ssl_install(this);' class='btn btn-xs'>Install Certificate</a></td></tr>");
+        var row = $("<tr><th scope='row' class='domain'><a href=''></a></th><td class='status'></td> <td class='actions'><a href='#' class='btn btn-xs ssl-install-cert'>Install Certificate</a></td></tr>");
         tb.append(row);
         row.attr('data-domain', domains[i].domain);
         row.find('.domain a').text(domains[i].domain);
@@ -218,7 +218,7 @@ function provision_tls_cert() {
 
         } else if (r.result == "installed") {
           n.find("p").addClass("text-success").text("The TLS certificate was provisioned and installed.");
-          setTimeout("show_tls(true)", 1); // update main table of certificate statuses, call with arg keep_provisioning_shown true so that we don't clear what we just outputted
+          setTimeout(function() { show_tls(true); }, 1); // update main table of certificate statuses, call with arg keep_provisioning_shown true so that we don't clear what we just outputted
 
         }
 
@@ -233,4 +233,12 @@ function provision_tls_cert() {
         $('#ssl_provision_p .btn').removeAttr("disabled");
     });
 }
+
+$(function() {
+  $('#ssl_provision_button').on('click', function() { return provision_tls_cert(); });
+  $('#ssldomain, #sslcc').on('change', show_csr);
+  $('#ssl_install_button').on('click', function() { install_cert(); });
+  // Per-domain install links are created dynamically; use a delegated binding.
+  $('#ssl_domains').on('click', 'a.ssl-install-cert', function() { return ssl_install(this); });
+});
 </script>

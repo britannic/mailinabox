@@ -3,4 +3,16 @@ POSTDATA=dummy
 if [ "$1" == "--force" ]; then
 	POSTDATA=force=1
 fi
-curl -s -d $POSTDATA --user "$(</var/lib/mailinabox/api.key):" http://127.0.0.1:10222/dns/update
+# Exchange the root API key for a short-lived OAuth bearer token (the 'system'
+# client's secret is the api.key file, so a stale key is rejected here).
+TOKEN=$(curl -s -d "grant_type=client_credentials&client_id=system&client_secret=$(</var/lib/mailinabox/api.key)&scope=admin" http://127.0.0.1:10222/oauth/token \
+	| python3 -c "import sys, json
+try:
+    print(json.load(sys.stdin)['access_token'])
+except Exception:
+    pass")
+if [ -z "$TOKEN" ]; then
+	echo "The management daemon refused access. The API key file may be out of sync. Try 'service mailinabox restart'." 1>&2
+	exit 1
+fi
+curl -s -d $POSTDATA -H "Authorization: Bearer $TOKEN" http://127.0.0.1:10222/dns/update

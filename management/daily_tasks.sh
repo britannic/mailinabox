@@ -23,3 +23,10 @@ management/ssl_certificates.py -q  2>&1 | management/email_administrator.py "TLS
 
 # Run status checks and email the administrator if anything changed.
 management/status_checks.py --show-changes  2>&1 | management/email_administrator.py "Status Checks Change Notice"
+
+# Purge expired/revoked OAuth authorization codes and tokens from the
+# auth database (STORAGE_ROOT/auth/auth.sqlite). The routine purge count
+# on stdout is discarded; only unexpected errors (stderr) are piped to
+# email_administrator.py, which emails nothing when stdin is empty —
+# so this does not generate a nightly email.
+management/oauth_store.py purge 2>&1 >/dev/null | management/email_administrator.py "OAuth Token Store Purge Errors"

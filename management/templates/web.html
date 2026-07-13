@@ -36,7 +36,7 @@
 
 </ol>
 
-<script>
+<script nonce="{{ csp_nonce }}">
 function show_web() {
  api(
     "/web/domains",
@@ -48,7 +48,7 @@ function show_web() {
 	tb.text('');
 	for (var i = 0; i < domains.length; i++) {
 		if (!domains[i].static_enabled) continue;
-		var row = $("<tr><th scope='colgroup' class='domain'><a href=''></a></th><td class='directory'><tt/></td> <td class='change-root hidden'><button class='btn btn-default btn-xs' onclick='show_change_web_root(this)'>Change</button></td></tr>");
+		var row = $("<tr><th scope='colgroup' class='domain'><a href=''></a></th><td class='directory'><tt/></td> <td class='change-root hidden'><button class='btn btn-default btn-xs change-web-root'>Change</button></td></tr>");
 		tb.append(row);
 		row.attr('data-domain', domains[i].domain);
 		row.attr('data-custom-web-root', domains[i].custom_root);
@@ -86,4 +86,9 @@ function show_change_web_root(elem) {
     'Update',
     function() { do_web_update(); });
 }
+
+$(function() {
+  // Rows are created dynamically by show_web(); use a delegated binding.
+  $('#web_domains_existing').on('click', 'button.change-web-root', function() { show_change_web_root(this); });
+});
 </script>

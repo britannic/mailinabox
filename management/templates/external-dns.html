@@ -44,7 +44,7 @@
 
 <h3>Download zonefile</h3>
 <p>You can download your zonefiles here or use the table of records below.</p>
-<form class="form-inline" role="form" onsubmit="do_download_zonefile(); return false;">
+<form id="downloadZonefile-form" class="form-inline" role="form">
     <div class="form-group">
         <div class="form-group">
             <label for="downloadZonefile" class="control-label sr-only">Zone</label>
@@ -68,7 +68,7 @@
 	</tbody>
 </table>
 
-<script>
+<script nonce="{{ csp_nonce }}">
 function show_external_dns() {
   api(
     "/dns/zones",
@@ -124,4 +124,8 @@ function do_download_zonefile() {
             show_modal_error("Download Zonefile (Error)", $("<pre/>").text(err));
         });
 }
+
+$(function() {
+  $('#downloadZonefile-form').on('submit', function() { do_download_zonefile(); return false; });
+});
 </script>
