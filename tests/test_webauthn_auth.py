@@ -812,3 +812,47 @@ def test_feature_flag_off_hides_entire_namespace(guardbox, monkeypatch):
 	for method, path in probes:
 		r = guardbox.http.open(path, method=method)
 		assert r.status_code == 404, (method, path, r.status_code)
+
+
+def _build_guard_app(tmp_path):
+	env = {"STORAGE_ROOT": str(tmp_path), "PRIMARY_HOSTNAME": "box.example.com"}
+	(tmp_path / "auth").mkdir(mode=0o700)
+	deps = SimpleNamespace(log_failed_login=lambda request: None)
+	app = Flask("webauthn-limit-test", template_folder=os.path.join(os.path.dirname(__file__), "..", "management", "templates"))
+	app.testing = True
+	webauthn_auth.init_webauthn(app, env, deps)
+	return app, env
+
+
+def test_begin_rate_limit_trips_after_cap(tmp_path, monkeypatch):
+	monkeypatch.setattr(webauthn_auth, "is_passkeys_enabled", lambda env: True)
+	monkeypatch.setattr(webauthn_auth, "_BEGIN_RATE_MAX", 2)
+	app, _ = _build_guard_app(tmp_path)
+	http = app.test_client()
+	hdr = {"X-Forwarded-For": "203.0.113.7"}
+	# The first _BEGIN_RATE_MAX begin calls from one IP are allowed...
+	for i in range(2):
+		r = http.post("/auth/webauthn/authenticate/begin", json={}, headers=hdr)
+		assert r.status_code == 200, (i, r.status_code)
+	# ...the next from the same IP is throttled with a generic 429.
+	r = http.post("/auth/webauthn/authenticate/begin", json={}, headers=hdr)
+	assert r.status_code == 429
+	assert r.get_json()["error"] == "Too many requests, please slow down."
+	# A different IP keeps its own budget.
+	r = http.post("/auth/webauthn/authenticate/begin", json={}, headers={"X-Forwarded-For": "203.0.113.8"})
+	assert r.status_code == 200
+
+
+def test_authenticate_begin_bounded_by_outstanding_challenges(tmp_path, monkeypatch):
+	monkeypatch.setattr(webauthn_auth, "is_passkeys_enabled", lambda env: True)
+	monkeypatch.setattr(webauthn_auth, "_MAX_OUTSTANDING_AUTH_CHALLENGES", 2)
+	app, env = _build_guard_app(tmp_path)
+	store = oauth_server.current_store(env)
+	# Fill the live-authentication-challenge backlog to the cap directly.
+	store.save_webauthn_challenge("chal-a", None, "authentication")
+	store.save_webauthn_challenge("chal-b", None, "authentication")
+	# The next begin is refused (503) and creates no further challenge row.
+	r = app.test_client().post("/auth/webauthn/authenticate/begin", json={}, headers={"X-Forwarded-For": "203.0.113.9"})
+	assert r.status_code == 503
+	assert r.get_json()["error"] == "This request expired, please try again."
+	assert store.count_outstanding_webauthn_challenges("authentication") == 2

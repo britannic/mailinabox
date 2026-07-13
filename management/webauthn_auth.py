@@ -59,9 +59,9 @@ logger = logging.getLogger("miab.webauthn")
 # worker (see daemon.py), so one in-process _RateLimiter is the whole box's
 # authoritative view.
 
-_BEGIN_RATE_MAX = 20             # allowed begin requests per IP per window
-_BEGIN_RATE_WINDOW = 60          # seconds
-_BEGIN_RATE_PRUNE_AT = 4096      # sweep stale IP entries once the map grows past this
+_BEGIN_RATE_MAX = 20  # allowed begin requests per IP per window
+_BEGIN_RATE_WINDOW = 60  # seconds
+_BEGIN_RATE_PRUNE_AT = 4096  # sweep stale IP entries once the map grows past this
 _MAX_OUTSTANDING_AUTH_CHALLENGES = 200  # live unconsumed `authentication` challenges
 
 _BEGIN_PATHS = ("/auth/webauthn/register/begin", "/auth/webauthn/authenticate/begin")
@@ -446,3 +446,27 @@ def init_webauthn(app, env, deps):
 		# not exist. Registered first so it short-circuits ahead of the rate guard.
 		if request.path.startswith("/auth/webauthn/") and not is_passkeys_enabled(env):
 			abort(404)
+
+	begin_rate_limiter = _RateLimiter(_BEGIN_RATE_MAX, _BEGIN_RATE_WINDOW)
+
+	@app.before_request
+	def _passkeys_begin_rate_guard():
+		# Runs only for the two unauthenticated begin endpoints. Returns a
+		# response to short-circuit before the route body writes a challenge row.
+		if request.path not in _BEGIN_PATHS:
+			return None
+		ip = _client_ip()
+		if not begin_rate_limiter.check(ip):
+			# Distinct from log_failed_login (which covers failed *finish*
+			# assertions): begin spam is a separate contention vector.
+			app.logger.warning("passkey begin rate limit exceeded for ip %s", ip)
+			return jsonify({"error": "Too many requests, please slow down."}), 429
+		if request.path == _AUTHENTICATE_BEGIN_PATH:
+			# Bound the GLOBAL live authentication-challenge backlog (distributed
+			# begin spam across many IPs). Expired rows do not count — only real
+			# pressure on the shared auth.sqlite connection does.
+			outstanding = oauth_server.current_store(env).count_outstanding_webauthn_challenges("authentication")
+			if outstanding >= _MAX_OUTSTANDING_AUTH_CHALLENGES:
+				app.logger.warning("passkey authenticate/begin refused: %d live authentication challenges at cap %d", outstanding, _MAX_OUTSTANDING_AUTH_CHALLENGES)
+				return jsonify({"error": "This request expired, please try again."}), 503
+		return None
