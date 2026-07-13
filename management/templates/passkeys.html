@@ -164,7 +164,8 @@ lock you out of your account.</p>
               'POST',
               JSON.stringify(body),
               function(created) { prompt_passkey_name(created.id, created.name); },
-              function() { passkey_show_error('Could not register the passkey. Please try again.'); }
+              function() { passkey_show_error('Could not register the passkey. Please try again.'); },
+              { 'Content-Type': 'application/json' }
             );
           })
           .catch(function() { passkey_show_error('Passkey creation was cancelled or failed.'); });
@@ -189,7 +190,8 @@ lock you out of your account.</p>
           'PATCH',
           JSON.stringify({ name: name }),
           function() { show_passkeys(); },
-          function() { passkey_show_error('Could not rename the passkey.'); }
+          function() { passkey_show_error('Could not rename the passkey.'); },
+          { 'Content-Type': 'application/json' }
         );
       },
       function() { show_passkeys(); }
