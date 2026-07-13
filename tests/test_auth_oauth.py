@@ -23,7 +23,7 @@
 # The test account must NOT have TOTP enrolled (this script cannot mint
 # TOTP codes); it fails fast with a clear message if it does.
 #
-# ruff: noqa: S310, S404, S603
+# ruff: noqa: S310, S404, S603, PLC0415
 
 import sys, os, json, ssl, time, base64, hashlib, secrets, subprocess, sqlite3
 import urllib.request, urllib.parse, urllib.error
@@ -214,6 +214,104 @@ def imap_password(user, password):
 	M.logout()
 	return True
 
+def run_passkey_tests():
+	# Full passkey (WebAuthn) round-trip: enroll a credential with a scripted
+	# software authenticator, then SIGN IN with it at the authorize endpoint and
+	# confirm the issued OAuth code exchanges for a working token whose identity
+	# is the enrolling user --- resolved from the stored credential row, never
+	# from client input. Requires an admin account (enrollment needs scope
+	# 'admin') and the cryptography-backed helper; skips cleanly otherwise.
+	try:
+		from webauthn_softauth import SoftwareAuthenticator
+	except ImportError:
+		skip("passkey round-trip --- tests/webauthn_softauth.py (or cryptography) not importable on the test runner")
+		return
+
+	# The feature must be enabled (default true); probe the unauthenticated begin.
+	status, _hdrs, _body = http("POST", f"https://{host}/admin/auth/webauthn/authenticate/begin", data=b"{}", headers={"Content-Type": "application/json"})
+	if status == 404:
+		skip("passkey round-trip --- auth.passkeys is disabled on this box (begin endpoint 404s)")
+		return
+
+	tok = panel_login()
+	access = tok["access_token"]
+	status, _hdrs, body = http("GET", f"https://{host}/admin/oauth/userinfo", bearer=access)
+	info = json.loads(body) if status == 200 else {}
+	if "admin" not in info.get("privileges", []):
+		skip("passkey round-trip --- the test account has no admin privilege to enroll a passkey")
+		return
+
+	# tests/webauthn_softauth.py's SoftwareAuthenticator takes rp_id/origin in
+	# its constructor and exposes .create(challenge, uv=, origin=) /
+	# .get(challenge, uv=, origin=, sign_count=) -- NOT a .register()/.authenticate()
+	# pair -- so the base64url challenge is pulled out of each begin response's
+	# JSON below and fed to .create()/.get() directly.
+	soft = SoftwareAuthenticator(rp_id=host, origin=f"https://{host}")
+
+	def post_json(path, obj, bearer=None):
+		return http("POST", f"https://{host}{path}", data=json.dumps(obj).encode("utf8"), headers={"Content-Type": "application/json"}, bearer=bearer)
+
+	# --- Enrollment (Bearer admin) ---
+	status, _hdrs, body = post_json("/admin/auth/webauthn/register/begin", {}, bearer=access)
+	expect(status == 200, "register/begin returns creation options for an admin Bearer token")
+	creation_options = json.loads(body)
+	attestation = soft.create(creation_options["challenge"])
+	status, _hdrs, body = post_json("/admin/auth/webauthn/register/finish", attestation, bearer=access)
+	expect(status == 200, "register/finish verifies the attestation and stores the credential")
+	cred_id = json.loads(body)["id"]
+	ok("software authenticator enrolled a passkey")
+
+	try:
+		# --- Sign-in at the authorize endpoint (unauthenticated ceremony) ---
+		verifier, challenge = make_pkce()
+		state = secrets.token_hex(16)
+		authz_qs = urllib.parse.urlencode({
+			"response_type": "code", "client_id": "panel", "redirect_uri": f"https://{host}/admin",
+			"scope": "admin profile", "state": state, "code_challenge": challenge, "code_challenge_method": "S256"})
+		status, _hdrs, body = post_json("/admin/auth/webauthn/authenticate/begin", {})
+		expect(status == 200, "authenticate/begin returns request options")
+		request_options = json.loads(body)
+		expect(request_options.get("allowCredentials", []) == [], "authenticate/begin uses discoverable credentials (empty allowCredentials)")
+		assertion = soft.get(request_options["challenge"])
+		status, _hdrs, body = http("POST", f"https://{host}/admin/auth/webauthn/authenticate/finish?{authz_qs}", data=json.dumps(assertion).encode("utf8"), headers={"Content-Type": "application/json"})
+		expect(status == 200, "authenticate/finish verifies the assertion and returns a redirect")
+		redirect_url = json.loads(body).get("redirect", "")
+		expect(redirect_url.startswith(f"https://{host}/admin"), "the passkey redirect targets the registered client redirect_uri (exact match)")
+		qs = urllib.parse.parse_qs(urllib.parse.urlsplit(redirect_url).query)
+		expect(qs.get("state", [None])[0] == state, "passkey sign-in echoes the OAuth state faithfully")
+		code = qs.get("code", [None])[0]
+		expect(code is not None, "passkey sign-in delivers an authorization code")
+
+		# The passkey-issued code exchanges for a working token with NO TOTP step ---
+		# a user-verified passkey is itself the second factor (MFA is skipped).
+		status, exchanged = token_post({"grant_type": "authorization_code", "client_id": "panel", "code": code, "redirect_uri": f"https://{host}/admin", "code_verifier": verifier})
+		expect(status == 200 and "access_token" in exchanged, "the passkey-issued code exchanges for an access token (TOTP skipped)")
+
+		# Identity was resolved from the credential row, not from any client input.
+		status, _hdrs, body = http("GET", f"https://{host}/admin/oauth/userinfo", bearer=exchanged["access_token"])
+		who = json.loads(body) if status == 200 else {}
+		expect(status == 200 and who.get("email") == emailaddress, "the passkey session resolves to the enrolling user's own identity")
+
+		# Anti-injection: an unregistered redirect_uri is fatal, never a code (PKCE
+		# S256 + exact redirect-registry match are the controls on this path).
+		status, _hdrs, body = post_json("/admin/auth/webauthn/authenticate/begin", {})
+		bad_request_options = json.loads(body)
+		bad_assertion = soft.get(bad_request_options["challenge"])
+		_, bad_challenge = make_pkce()
+		bad_qs = urllib.parse.urlencode({
+			"response_type": "code", "client_id": "panel", "redirect_uri": "https://attacker.example/steal",
+			"scope": "admin profile", "state": secrets.token_hex(8), "code_challenge": bad_challenge, "code_challenge_method": "S256"})
+		status, _hdrs, _body = http("POST", f"https://{host}/admin/auth/webauthn/authenticate/finish?{bad_qs}", data=json.dumps(bad_assertion).encode("utf8"), headers={"Content-Type": "application/json"})
+		expect(status != 200, "passkey sign-in with an unregistered redirect_uri fails fatally and never issues a code")
+	finally:
+		# Revoke the test passkey so reruns don't accumulate credentials or trip
+		# excludeCredentials on the next enrollment.
+		status, _hdrs, _body = http("DELETE", f"https://{host}/admin/auth/webauthn/credentials/{cred_id}", bearer=access)
+		if status in (200, 204):
+			ok("test passkey revoked (cleanup)")
+		else:
+			print(f"WARNING: could not revoke test passkey id {cred_id} (HTTP {status}); remove it from the control panel", file=sys.stderr)
+
 def run_public_tests():
 	# 1. Security headers on the panel (compensating controls for web-storage tokens).
 	status, hdrs, _body = http("GET", f"https://{host}/admin")
@@ -288,6 +386,12 @@ def run_public_tests():
 	expect(imap_password(emailaddress, pw), "IMAP password (PLAIN) login still works")
 	status, _hdrs, _body = http("POST", f"https://{host}/admin/login", basic=(emailaddress, pw))
 	expect(status == 200, "legacy Basic /login still works by default")
+
+	# 14b. Passkey (WebAuthn) full round-trip: enroll then sign in with a scripted
+	# software authenticator. Runs before the password-change check (#15) so the
+	# temporary password swap can never perturb it. Skips cleanly if the account
+	# is non-admin, the feature is off, or the helper/cryptography is unavailable.
+	run_passkey_tests()
 
 	# 15. A password change invalidates existing tokens (the password_state
 	# fingerprint — the compensating control for Roundcube's out-of-band, direct-
@@ -401,6 +505,38 @@ def run_root_tests():
 			f.write(original_settings)
 	status, _hdrs, _body = http("POST", f"https://{host}/admin/login", basic=(emailaddress, pw))
 	expect(status == 200, "legacy Basic works again after restoring settings.yaml")
+
+	# R8. auth.passkeys feature flag: false --> every passkey endpoint returns 404
+	# (instant, password-independent rollback lever). settings.yaml is edited via
+	# the management venv (rtyaml) and restored afterwards, exactly like R7.
+	settings_path = os.path.join(env["STORAGE_ROOT"], "settings.yaml")
+	with open(settings_path, "rb") as f:
+		pk_original = f.read()
+	set_passkeys = 'import sys, rtyaml\np = sys.argv[1]\nwith open(p) as f:\n\tcfg = rtyaml.load(f) or {}\ncfg.setdefault("auth", {})["passkeys"] = (sys.argv[2] == "true")\nwith open(p, "w") as f:\n\tf.write(rtyaml.dump(cfg))\n'
+	passkey_endpoints = [
+		("POST", "/admin/auth/webauthn/register/begin"),
+		("POST", "/admin/auth/webauthn/register/finish"),
+		("POST", "/admin/auth/webauthn/authenticate/begin"),
+		("POST", "/admin/auth/webauthn/authenticate/finish"),
+		("GET", "/admin/auth/webauthn/credentials"),
+		("PATCH", "/admin/auth/webauthn/credentials/1"),
+		("DELETE", "/admin/auth/webauthn/credentials/1"),
+	]
+	try:
+		subprocess.check_call(["/usr/local/lib/mailinabox/env/bin/python", "-c", set_passkeys, settings_path, "false"])
+		off_ok = True
+		for method, path in passkey_endpoints:
+			body = b"" if method in ("POST", "PATCH") else None
+			status, _hdrs, _body = http(method, f"https://{host}{path}", data=body, headers={"Content-Type": "application/json"})
+			if status != 404:
+				off_ok = False
+				print(f"  {method} {path} returned {status}, expected 404 while auth.passkeys=false", file=sys.stderr)
+		expect(off_ok, "auth.passkeys: false makes every passkey endpoint return 404")
+	finally:
+		with open(settings_path, "wb") as f:
+			f.write(pk_original)
+	status, _hdrs, _body = http("POST", f"https://{host}/admin/auth/webauthn/authenticate/begin", data=b"{}", headers={"Content-Type": "application/json"})
+	expect(status != 404, "passkey endpoints are reachable again after restoring settings.yaml (auth.passkeys default true)")
 
 def run_daemon_down():
 	# Separate mode: stopping the daemon kills the OAuth endpoints that

@@ -113,7 +113,7 @@ def managesieve_test():
 	finally:
 		M.logout() # shuts down connection, has nothing to do with login()
 
-def http_test(url, expected_status, postdata=None, qsargs=None, auth=None):
+def http_test(url, expected_status, postdata=None, qsargs=None, auth=None, jsonbody=None):
 	import urllib.parse
 	import requests
 	from requests.auth import HTTPBasicAuth
@@ -121,7 +121,7 @@ def http_test(url, expected_status, postdata=None, qsargs=None, auth=None):
 	# form request
 	url = urllib.parse.urljoin("https://" + hostname, url)
 	if qsargs: url += "?" + urllib.parse.urlencode(qsargs)
-	urlopen = requests.get if not postdata else requests.post
+	urlopen = requests.post if (postdata or jsonbody is not None) else requests.get
 
 	try:
 		# issue request
@@ -129,6 +129,7 @@ def http_test(url, expected_status, postdata=None, qsargs=None, auth=None):
 			url,
 			auth=HTTPBasicAuth(*auth) if auth else None,
 			data=postdata,
+			json=jsonbody,
 			headers={'User-Agent': 'Mail-in-a-Box fail2ban tester'},
 			timeout=8,
 			verify=False) # don't bother with HTTPS validation, it may not be configured yet
@@ -241,6 +242,32 @@ if __name__ == "__main__":
 	# failures call log_failed_login and must trip the same
 	# miab-management-daemon jail as the login route above.
 	run_test(http_test, ["/admin/oauth/token", 401, {"grant_type": "client_credentials"}, None, ["system", "wrongsecret"]], 20, 30, 1)
+
+	# Mail-in-a-Box passkey (WebAuthn) sign-in: repeated failed assertions at the
+	# authenticate/finish endpoint call log_failed_login and must trip the same
+	# miab-management-daemon jail as the routes above --- zero filter changes. A
+	# syntactically well-formed assertion whose challenge was never issued fails
+	# the single-use challenge lookup (generic 400) and logs the failed login.
+	import base64, json
+	def _b64u(b):
+		return base64.urlsafe_b64encode(b).decode().rstrip("=")
+	client_data = json.dumps({
+		"type": "webauthn.get",
+		"challenge": _b64u(b"never-issued-challenge"),
+		"origin": "https://" + hostname,
+	}).encode()
+	bogus_assertion = {
+		"id": _b64u(b"bogus-credential-id"),
+		"rawId": _b64u(b"bogus-credential-id"),
+		"type": "public-key",
+		"response": {
+			"clientDataJSON": _b64u(client_data),
+			"authenticatorData": _b64u(b"\x00" * 37),
+			"signature": _b64u(b"\x00" * 8),
+			"userHandle": None,
+		},
+	}
+	run_test(http_test, ["/admin/auth/webauthn/authenticate/finish", 400, None, None, None, bogus_assertion], 20, 30, 1)
 
 	# Munin via the Mail-in-a-Box control panel
 	run_test(http_test, ["/admin/munin/", 401], 20, 30, 1)
