@@ -47,8 +47,10 @@ else
 	echo "ok: no plugin fatals"; PASS=$((PASS+1))
 fi
 
-echo "==> roundcube.sqlite is in WAL journal mode (webmail.sh sed patch + PRAGMA)"
-check "sqlite journal_mode=wal" wal "$(dx sqlite3 /home/user-data/mail/roundcube/roundcube.sqlite 'PRAGMA journal_mode;')"
+echo "==> WAL patch took effect (roundcube.sqlite WAL, patched source, users.sqlite untouched)"
+check "roundcube.sqlite journal_mode=wal" wal "$(dx sqlite3 /home/user-data/mail/roundcube/roundcube.sqlite 'PRAGMA journal_mode;')"
+check "WAL pragma commented in installed source" 0 "$(dx grep -c '^[^#]*PRAGMA journal_mode = WAL' /usr/local/lib/roundcubemail/program/lib/Roundcube/db/sqlite.php)"
+check "users.sqlite journal_mode=delete" delete "$(dx sqlite3 /home/user-data/mail/users.sqlite 'PRAGMA journal_mode;')"
 
 echo
 echo "$PASS passed, $FAIL failed"
