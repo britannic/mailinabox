@@ -887,3 +887,36 @@ def test_validate_bearer_client_credentials_token(box):
 	raw, _ = box.store.create_token("access", "system", None, "admin", int(time.time()) + 600)
 	info = oauth_server.validate_bearer(box.env, raw, "admin", box.deps)
 	assert info == {"user_email": None, "scopes": {"admin"}, "client_id": "system"}
+
+
+# ---------------------------------------------------------------------------
+# Passkeys Task 1: authorize helpers extracted to module scope
+# ---------------------------------------------------------------------------
+
+def test_build_code_redirect_appends_code_and_state():
+	# Extracted from the inline authorize success path so the passkey sign-in
+	# ceremony (Task 6) can return the same URL in a JSON body. It returns a URL
+	# string, not a Flask response.
+	p = {"redirect_uri": PANEL_REDIRECT, "state": "st123"}
+	assert oauth_server.build_code_redirect(p, "the-code") == PANEL_REDIRECT + "?code=the-code&state=st123"
+	p2 = {"redirect_uri": PANEL_REDIRECT + "?x=1", "state": ""}
+	assert oauth_server.build_code_redirect(p2, "c2") == PANEL_REDIRECT + "?x=1&code=c2"
+
+
+def test_validate_authorize_request_is_module_scope(box):
+	# The passkey module (Task 6) imports this from module scope; it was a closure
+	# inside init_oauth, unreachable from another module. A valid authorize request
+	# returns None (acceptable); the extracted logic is otherwise identical.
+	assert callable(oauth_server.validate_authorize_request)
+	_, challenge = pkce_pair()
+	p = {"client_id": "panel", "redirect_uri": PANEL_REDIRECT, "response_type": "code", "scope": "admin profile", "state": "st123", "code_challenge": challenge, "code_challenge_method": "S256"}
+	assert oauth_server.validate_authorize_request(p, box.env) is None
+
+
+def test_validate_authorize_request_fatal_for_unknown_client(box):
+	# An unknown client_id still yields the 400 HTML fatal page (never a redirect).
+	p = {"client_id": "evil", "redirect_uri": PANEL_REDIRECT, "response_type": "code", "scope": "admin profile", "state": "", "code_challenge": "x", "code_challenge_method": "S256"}
+	with box.app.test_request_context():
+		html, status = oauth_server.validate_authorize_request(p, box.env)
+	assert status == 400
+	assert "client_id" in html
