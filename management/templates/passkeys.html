@@ -163,7 +163,14 @@ lock you out of your account.</p>
               '/auth/webauthn/register/finish',
               'POST',
               JSON.stringify(body),
-              function(created) { prompt_passkey_name(created.id, created.name); },
+              function(created) {
+                // api() forces mimeType text/plain when the request body is a
+                // string (register/finish sends a JSON string), so jQuery hands
+                // us the raw response text rather than a parsed object — parse it
+                // so created.id is the new credential's id, not undefined.
+                if (typeof created === 'string') created = JSON.parse(created);
+                prompt_passkey_name(created.id, created.name);
+              },
               function() { passkey_show_error('Could not register the passkey. Please try again.'); },
               { 'Content-Type': 'application/json' }
             );
