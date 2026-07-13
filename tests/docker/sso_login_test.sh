@@ -21,10 +21,12 @@ fail() { echo "FAIL: $1"; exit 1; }
 
 dx test -f /root/.miab-provisioned || fail "container not provisioned (run smoke.sh first)"
 
-# Fresh cookie jar, and a marker in mail.log so we only grep lines from this run.
+# Fresh cookie jar. Record mail.log's current length so step 5 only examines
+# lines appended by THIS run. (A syslog marker via `logger` cannot work here:
+# dovecot writes mail.log directly via log_path and rsyslog is not running in
+# the container, so logger lines never reach the file.)
 dx rm -f "$JAR"
-MARK="sso-test-marker-$$-$(date +%s)"
-dx logger -p mail.info "$MARK"
+MAILLOG_START=$(dx sh -c 'wc -l < /var/log/mail.log 2>/dev/null || echo 0')
 
 echo "==> 1. Roundcube SSO redirect carries PKCE code_challenge"
 AUTH_URL=$(dx curl -sk -c "$JAR" -o /dev/null -w '%{redirect_url}' "https://$HOST/mail/?_task=login&_action=oauth")
@@ -64,11 +66,11 @@ case "$FINAL" in
 esac
 
 echo "==> 5. Dovecot saw a token-based IMAP login"
-if dx sh -c "sed -n '/$MARK/,\$p' /var/log/mail.log | grep -Eq 'imap-login.*Login.*method=(XOAUTH2|OAUTHBEARER)'"; then
+if dx sh -c "tail -n +$((MAILLOG_START + 1)) /var/log/mail.log | grep -Eq 'imap-login.*Login.*method=(XOAUTH2|OAUTHBEARER)'"; then
 	echo "ok: XOAUTH2/OAUTHBEARER login in mail.log"
 else
-	dx sh -c "sed -n '/$MARK/,\$p' /var/log/mail.log | tail -20"
-	fail "no XOAUTH2/OAUTHBEARER login found in mail.log after marker"
+	dx sh -c "tail -n +$((MAILLOG_START + 1)) /var/log/mail.log | tail -20"
+	fail "no XOAUTH2/OAUTHBEARER login found in mail.log lines from this run"
 fi
 
 echo "SSO PASS"
