@@ -56,7 +56,11 @@ See the [setup guide](https://mailinabox.email/guide.html) for detailed, user-fr
 
 For experts, start with a completely fresh (really, I mean it) Ubuntu 22.04 LTS 64-bit machine. On the machine...
 
-Clone this repository and checkout the tag corresponding to the most recent release (which you can find in the tags or releases lists on GitHub):
+Install this fork with the one-liner, which clones this repository at the latest release tag and starts setup:
+
+	$ curl -fsS https://raw.githubusercontent.com/britannic/mailinabox/master/setup/bootstrap.sh | sudo bash
+
+Or do the same by hand: clone this repository and checkout the tag corresponding to the most recent release (which you can find in the tags or releases lists on GitHub):
 
 	$ git clone https://github.com/britannic/mailinabox
 	$ cd mailinabox

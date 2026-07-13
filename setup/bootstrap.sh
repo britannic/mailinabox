@@ -2,7 +2,7 @@
 #########################################################
 # This script is intended to be run like this:
 #
-#   curl https://mailinabox.email/setup.sh | sudo bash
+#   curl -fsS https://raw.githubusercontent.com/britannic/mailinabox/master/setup/bootstrap.sh | sudo bash
 #
 #########################################################
 
@@ -60,15 +60,18 @@ if [ ! -d "$HOME/mailinabox" ]; then
 	fi
 
 	if [ "$SOURCE" == "" ]; then
-		SOURCE=https://github.com/mail-in-a-box/mailinabox
+		SOURCE=https://github.com/britannic/mailinabox
 	fi
 
 	echo "Downloading Mail-in-a-Box $TAG. . ."
-	git clone \
-		-b "$TAG" --depth 1 \
+	if ! git clone \
+		-b "$TAG" --depth 1 --quiet \
 		"$SOURCE" \
 		"$HOME/mailinabox" \
-		< /dev/null 2> /dev/null
+		< /dev/null; then
+		echo "Failed to download Mail-in-a-Box $TAG from $SOURCE."
+		exit 1
+	fi
 
 	echo
 fi
