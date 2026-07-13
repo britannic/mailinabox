@@ -8,10 +8,10 @@ Mail-in-a-Box is a self-hosted mail server appliance targeting Ubuntu 22.04 LTS.
 
 ## Development Environment
 
-Install and upgrade instructions are at https://mailinabox.email/. Both use the same command on a fresh Ubuntu 22.04 server:
+General install and upgrade documentation is at https://mailinabox.email/, but this fork installs with its own one-liner on a fresh Ubuntu 22.04 server (upstream's `https://mailinabox.email/setup.sh` would install upstream, not this fork):
 
 ```bash
-curl -s https://mailinabox.email/setup.sh | sudo bash
+curl -fsS https://raw.githubusercontent.com/britannic/mailinabox/master/setup/bootstrap.sh | sudo bash
 ```
 
 To re-run a single setup component after making changes, SSH into the server and run the relevant script directly:
