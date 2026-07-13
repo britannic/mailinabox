@@ -1,18 +1,8 @@
 CHANGELOG
 =========
 
-In Development
---------------
-
-Authentication:
-
-* Mail-in-a-Box now includes a built-in OAuth 2.0 authorization server. Mail users can authenticate to IMAP and SMTP submission with OAUTHBEARER/XOAUTH2 access tokens; passwords continue to work everywhere.
-* The control panel logs in through the new authorization endpoint (authorization code + PKCE) and calls the management API with Bearer tokens. Panel sessions now survive daemon restarts, and users with TOTP enabled get multi-factor protection on all tokens they issue, including for mail access.
-* Roundcube offers a "Sign in with SSO" button alongside the password login form.
-* The management API's primary authentication scheme is now `Authorization: Bearer`. All HTTP Basic forms (root api.key, email:password, session keys) keep working but are deprecated and can be disabled by setting `auth.legacy_basic: false` in settings.yaml.
-* The control panel now sends a strict Content-Security-Policy and Referrer-Policy.
-* Users with TOTP enabled should prefer Roundcube's "Sign in with SSO" button: OAuth is the only path that extends multi-factor protection to IMAP/SMTP (tokens are issued behind TOTP), while password-based mail logins remain single-factor.
-* Operator notes: expect one localhost introspection POST per OAuth mail login (briefly cached by Dovecot's auth cache) and roughly one token-endpoint refresh per active session per hour; expired/revoked rows are purged nightly. Tokens in `STORAGE_ROOT/auth/auth.sqlite` are stored SHA-256-hashed — rows identify sessions but can never be replayed.
+v76-hrc.2 (July 13, 2026)
+-------------------------
 
 Upgrades:
 
@@ -23,6 +13,19 @@ Upgrades:
 * PHP upgraded from 8.0 to 8.2 across the box. Roundcube 1.7 requires PHP 8.1 or newer, and Nextcloud 26 (this fork's current release) is the ceiling for PHP 8.2 — boxes must already be on Nextcloud 26 before upgrading, since older Nextcloud step-upgrades can't run on PHP 8.2. The old php8.0-fpm packages are left installed and running but serving no traffic — this is deliberate rollback insurance, since a rollback to the previous release just repoints configs at 8.0.
 * RCMCardDAV updated from 4.4.3 to 5.1.3.
 * Verified end-to-end in the test container (`tests/docker/`): the smoke test, the SSO login flow, and post-upgrade health checks all pass.
+
+v76-hrc.1 (July 12, 2026)
+-------------------------
+
+Authentication:
+
+* Mail-in-a-Box now includes a built-in OAuth 2.0 authorization server. Mail users can authenticate to IMAP and SMTP submission with OAUTHBEARER/XOAUTH2 access tokens; passwords continue to work everywhere.
+* The control panel logs in through the new authorization endpoint (authorization code + PKCE) and calls the management API with Bearer tokens. Panel sessions now survive daemon restarts, and users with TOTP enabled get multi-factor protection on all tokens they issue, including for mail access.
+* Roundcube offers a "Sign in with SSO" button alongside the password login form.
+* The management API's primary authentication scheme is now `Authorization: Bearer`. All HTTP Basic forms (root api.key, email:password, session keys) keep working but are deprecated and can be disabled by setting `auth.legacy_basic: false` in settings.yaml.
+* The control panel now sends a strict Content-Security-Policy and Referrer-Policy.
+* Users with TOTP enabled should prefer Roundcube's "Sign in with SSO" button: OAuth is the only path that extends multi-factor protection to IMAP/SMTP (tokens are issued behind TOTP), while password-based mail logins remain single-factor.
+* Operator notes: expect one localhost introspection POST per OAuth mail login (briefly cached by Dovecot's auth cache) and roughly one token-endpoint refresh per active session per hour; expired/revoked rows are purged nightly. Tokens in `STORAGE_ROOT/auth/auth.sqlite` are stored SHA-256-hashed — rows identify sessions but can never be replayed.
 
 Version 76 (May 24, 2026)
 -------------------------
