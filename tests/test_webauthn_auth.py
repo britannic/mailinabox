@@ -16,8 +16,10 @@ import hmac
 import json
 import os
 import pathlib
+import secrets
 import sys
 import time
+import urllib.parse
 from types import SimpleNamespace
 
 import pytest
@@ -265,8 +267,11 @@ def test_endpoints_404_when_flag_disabled(env):
 
 
 def test_endpoint_stub_reachable_when_flag_enabled(env):
+	# authenticate/begin is now real (T6); credentials (T7) is still a stub --
+	# repoint this at a route that remains a genuine 501 placeholder so the
+	# test keeps testing "flag-enabled stub is reachable, not 404'd."
 	client = _make_app(env).test_client()  # no settings.yaml -> default enabled
-	assert client.post("/auth/webauthn/authenticate/begin").status_code == 501
+	assert client.get("/auth/webauthn/credentials").status_code == 501
 
 
 # ---------------------------------------------------------------------------
@@ -463,3 +468,62 @@ def test_register_endpoints_404_when_flag_off(wbox, monkeypatch):
 	headers = _admin_headers(wbox, "alice@box.example.com")
 	assert wbox.http.post("/auth/webauthn/register/begin", headers=headers).status_code == 404
 	assert wbox.http.post("/auth/webauthn/register/finish", json={}, headers=headers).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Task 6: sign-in ceremony (authenticate/begin + authenticate/finish)
+#
+# Unauthenticated, usernameless passkey sign-in wired into the OAuth
+# authorize flow. Reuses the `wbox` fixture (T5) -- the brief's restated
+# fixture is named `box`, but T5 actually landed it as `wbox`; kept as-is
+# here for a single definition and zero churn on the passing T5 suite above.
+# `soft` is a fresh SoftwareAuthenticator (tests/webauthn_softauth.py, T4)
+# bound to wbox's HOST/ORIGIN -- its constructor takes rp_id/origin (not the
+# brief's restated zero-arg form), and it exposes .create()/.get() (dict
+# returning) rather than a single .authenticate() helper, so `sign_in()`
+# below adapts call shape only, exactly like T5's `_register_attestation`.
+# ---------------------------------------------------------------------------
+
+PANEL_REDIRECT = "https://" + HOST + "/admin"
+
+
+@pytest.fixture
+def soft():
+	return SoftwareAuthenticator(rp_id=HOST, origin=ORIGIN)
+
+
+def pkce_pair():
+	verifier = secrets.token_urlsafe(32)
+	challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
+	return verifier, challenge
+
+
+def authorize_query(pkce_challenge, **overrides):
+	q = {"response_type": "code", "client_id": "panel", "redirect_uri": PANEL_REDIRECT, "scope": "admin profile", "state": "st123", "code_challenge": pkce_challenge, "code_challenge_method": "S256"}
+	q.update(overrides)
+	return urllib.parse.urlencode({k: v for k, v in q.items() if v is not None})
+
+
+def enroll(wbox, soft, email=EMAIL, sign_count=0, name="Test key"):
+	wbox.store.add_webauthn_credential(email, soft.credential_id, soft.cose_public_key(), sign_count, json.dumps(["internal"]), soft.aaguid.hex(), name)
+
+
+def sign_in(wbox, soft, pkce_challenge, *, origin=ORIGIN, user_verified=True, sign_count=1, **authz_overrides):
+	challenge = wbox.http.post("/auth/webauthn/authenticate/begin").get_json()["challenge"]
+	assertion = json.dumps(soft.get(challenge, uv=user_verified, origin=origin, sign_count=sign_count))
+	url = "/auth/webauthn/authenticate/finish?" + authorize_query(pkce_challenge, **authz_overrides)
+	return wbox.http.post(url, data=assertion, content_type="application/json")
+
+
+def test_authenticate_begin_stores_challenge_and_returns_options(wbox):
+	r = wbox.http.post("/auth/webauthn/authenticate/begin")
+	assert r.status_code == 200
+	opts = r.get_json()
+	assert opts["rpId"] == HOST
+	assert opts["userVerification"] == "required"
+	assert opts["allowCredentials"] == []
+	# The row was stored as an authentication challenge with no bound user, and
+	# it is single-use (this take consumes it).
+	row = wbox.store.take_webauthn_challenge(opts["challenge"], "authentication")
+	assert row is not None
+	assert row["user_email"] is None

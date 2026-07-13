@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import secrets
+import time
 
 from flask import request, jsonify, Response, abort
 
@@ -28,6 +29,7 @@ from webauthn.helpers import bytes_to_base64url, options_to_json
 from webauthn.helpers.cose import COSEAlgorithmIdentifier
 from webauthn.helpers.structs import (
 	AttestationConveyancePreference,
+	AuthenticationCredential,
 	AuthenticatorSelectionCriteria,
 	PublicKeyCredentialDescriptor,
 	PublicKeyCredentialUserEntity,
@@ -37,6 +39,16 @@ from webauthn.helpers.structs import (
 )
 
 logger = logging.getLogger("miab.webauthn")
+
+
+def _json_error(message, status=400):
+	# Shared generic error body for the unauthenticated sign-in ceremony
+	# (registration's routes predate this helper and keep their existing
+	# inline jsonify(...) shape). Never leaks internal detail -- every
+	# ceremony failure (unknown credential, wrong user, bad signature, replay,
+	# expiry) collapses to the SAME caller-facing message (spec 9.11, no
+	# enumeration).
+	return Response(json.dumps({"error": message}), status=status, mimetype="application/json")
 
 
 def is_passkeys_enabled(env):
@@ -224,12 +236,17 @@ def init_webauthn(app, env, deps):
 	@app.route("/auth/webauthn/authenticate/begin", methods=["POST"])
 	def webauthn_authenticate_begin():
 		_passkeys_enabled_or_404(env)
-		return jsonify({"error": "not implemented"}), 501  # body: T6
+		# Usernameless (discoverable-credential) sign-in: allowCredentials is
+		# empty; the authenticator picks a resident credential for this RP.
+		store = oauth_server.current_store(env)
+		options_json, raw_challenge = _authentication_options(env, store)
+		store.save_webauthn_challenge(raw_challenge, None, "authentication")
+		return Response(options_json, mimetype="application/json")
 
 	@app.route("/auth/webauthn/authenticate/finish", methods=["POST"])
 	def webauthn_authenticate_finish():
 		_passkeys_enabled_or_404(env)
-		return jsonify({"error": "not implemented"}), 501  # body: T6
+		return jsonify({"error": "not implemented"}), 501  # body: T6 Step 8
 
 	@app.route("/auth/webauthn/credentials", methods=["GET"])
 	def webauthn_list_credentials():
