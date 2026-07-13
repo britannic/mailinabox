@@ -159,6 +159,26 @@ def _authentication_options(env, store):  # noqa: ARG001
 	return options_to_json(options), bytes_to_base64url(challenge_bytes)
 
 
+# Display-only AAGUID -> friendly authenticator name. Attestation is "none"
+# (spec 5), so this is a best-effort UI label, never a security control.
+_AAGUID_NAMES = {
+	"fbfc3007-154e-4ecc-8c0b-6e020557d7bd": "iCloud Keychain",
+	"ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4": "Google Password Manager",
+	"08987058-cadc-4b81-b6e1-30de50dcbe96": "Windows Hello",
+	"9ddd1817-af5a-4672-a2b9-3e3dd95000a9": "Windows Hello",
+	"adce0002-35bc-c60a-648b-0b25f1f05503": "Chrome on Mac",
+	"bada5566-a7aa-401f-bd96-45619a55120d": "1Password",
+}
+
+
+def _friendly_authenticator_name(aaguid):
+	# Unknown authenticators and the all-zero "no attestation" AAGUID fall back
+	# to the generic label; the row's own `name` column is the user-facing label.
+	if not aaguid or aaguid == "00000000-0000-0000-0000-000000000000":
+		return "Passkey"
+	return _AAGUID_NAMES.get(aaguid.lower(), "Passkey")
+
+
 def _passkeys_enabled_or_404(env):
 	# Shared feature-flag guard for every /auth/webauthn/* endpoint. When the flag
 	# is off the whole surface disappears (spec 9.13). T8 consolidates rate
@@ -318,14 +338,51 @@ def init_webauthn(app, env, deps):
 	@app.route("/auth/webauthn/credentials", methods=["GET"])
 	def webauthn_list_credentials():
 		_passkeys_enabled_or_404(env)
-		return jsonify({"error": "not implemented"}), 501  # body: T7
+		user_email = _bearer_admin_email(env, deps)
+		if user_email is None:
+			return Response("", 401, {"WWW-Authenticate": 'Bearer error="invalid_token"'})
+		store = oauth_server.current_store(env)
+		creds = [
+			{
+				"id": c["id"],
+				"name": c["name"],
+				"created_at": c["created_at"],
+				"last_used_at": c["last_used_at"],
+				"aaguid": c["aaguid"],
+				"authenticator_name": _friendly_authenticator_name(c["aaguid"]),
+			}
+			for c in store.get_webauthn_credentials(user_email)
+		]
+		return jsonify({"credentials": creds})
 
 	@app.route("/auth/webauthn/credentials/<int:cred_id>", methods=["PATCH"])
-	def webauthn_rename_credential(cred_id):  # noqa: ARG001
+	def webauthn_rename_credential(cred_id):
 		_passkeys_enabled_or_404(env)
-		return jsonify({"error": "not implemented"}), 501  # body: T7
+		user_email = _bearer_admin_email(env, deps)
+		if user_email is None:
+			return Response("", 401, {"WWW-Authenticate": 'Bearer error="invalid_token"'})
+		store = oauth_server.current_store(env)
+		data = request.get_json(silent=True) or {}
+		name = (data.get("name") or "").strip()
+		if not name or len(name) > 100:
+			return Response(json.dumps({"error": "Please provide a name between 1 and 100 characters."}), status=400, mimetype="application/json")
+		# rename is scoped by user_email in the store; a foreign/unknown id
+		# changes nothing and returns False -> 404 (no cross-user enumeration).
+		if not store.rename_webauthn_credential(cred_id, user_email, name):
+			abort(404)
+		return jsonify({"id": cred_id, "name": name})
 
 	@app.route("/auth/webauthn/credentials/<int:cred_id>", methods=["DELETE"])
-	def webauthn_delete_credential(cred_id):  # noqa: ARG001
+	def webauthn_delete_credential(cred_id):
 		_passkeys_enabled_or_404(env)
-		return jsonify({"error": "not implemented"}), 501  # body: T7
+		user_email = _bearer_admin_email(env, deps)
+		if user_email is None:
+			return Response("", 401, {"WWW-Authenticate": 'Bearer error="invalid_token"'})
+		store = oauth_server.current_store(env)
+		owned = {c["id"]: c for c in store.get_webauthn_credentials(user_email)}
+		if cred_id not in owned:
+			# Unknown id, or one belonging to another user -> 404 (no enumeration).
+			abort(404)
+		store.delete_webauthn_credential(cred_id, user_email)
+		app.logger.info("Passkey revoked for %s (credential %s)", user_email, owned[cred_id]["credential_id"].hex()[:16])
+		return jsonify({"ok": True})
