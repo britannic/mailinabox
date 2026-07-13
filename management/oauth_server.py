@@ -365,6 +365,62 @@ def _redirect_error(p, error_code):
 	return redirect(p["redirect_uri"] + sep + urllib.parse.urlencode(q))
 
 
+def form_binding(p, binding_expires, store):
+	# Request-binding token: ties a rendered form to the exact authorization
+	# request it was rendered for, so a captured form POST cannot be replayed
+	# against a different client/redirect/scope/challenge.
+	#
+	# state and code_challenge are arbitrary, client-controlled strings, so a
+	# plain "|".join(...) of the raw fields would be ambiguous (a "|" inside
+	# one field could be confused with the delimiter, letting distinct field
+	# tuples hash identically). Hash each field to a fixed-length digest
+	# before joining so no field's contents can be mistaken for a delimiter.
+	fields = (p["client_id"], p["redirect_uri"], p["scope"], p["state"], p["code_challenge"], str(binding_expires))
+	message = "authz|" + "|".join(hashlib.sha256(field.encode()).hexdigest() for field in fields)
+	return hmac.new(store.get_server_secret(), message.encode(), hashlib.sha256).hexdigest()
+
+
+def render_authorize_form(p, env, store, error=None, show_totp=False, email="", passkeys_enabled=False):
+	binding_expires = int(time.time()) + AUTHZ_FORM_TTL
+	return render_template("oauth-authorize.html", hostname=env["PRIMARY_HOSTNAME"], client_name=_CLIENT_DISPLAY_NAMES.get(p["client_id"], p["client_id"]), fatal_error=None, error=error, show_totp=show_totp, email=email, binding=form_binding(p, binding_expires, store), binding_expires=binding_expires, passkeys_enabled=passkeys_enabled)
+
+
+def render_authorize_fatal(message, env):
+	# Invalid client_id/redirect_uri: a 400 HTML page, NEVER a redirect
+	# (redirecting would create an open redirector).
+	return render_template("oauth-authorize.html", hostname=env["PRIMARY_HOSTNAME"], client_name=None, fatal_error=message, error=None, show_totp=False, email="", binding="", binding_expires=0), 400
+
+
+def validate_authorize_request(p, env):
+	# Returns None if the request is acceptable, else a complete response.
+	client = oauth_clients.get_client(env, p["client_id"])
+	if client is None or "authorization_code" not in client.grant_types:
+		return render_authorize_fatal("This sign-in request came from an unknown application (invalid client_id).", env)
+	if p["redirect_uri"] not in client.redirect_uris:
+		return render_authorize_fatal("This sign-in request has an invalid redirect URI.", env)
+	if p["response_type"] != "code":
+		return _redirect_error(p, "unsupported_response_type")
+	scopes = set(p["scope"].split())
+	if not scopes or not scopes <= client.allowed_scopes:
+		return _redirect_error(p, "invalid_scope")
+	if not p["code_challenge"] or p["code_challenge_method"] != "S256":
+		# PKCE S256 is mandatory for every code client, public or confidential.
+		return _redirect_error(p, "invalid_request")
+	return None
+
+
+def build_code_redirect(p, raw_code):
+	# Builds the success redirect URL redirect_uri?code=...&state=... The password
+	# path wraps this in redirect(); the passkey sign-in ceremony (Task 6) returns
+	# it in a JSON body (a fetch cannot follow a 302), so this returns the URL
+	# string, not a Flask response.
+	q = {"code": raw_code}
+	if p["state"]:
+		q["state"] = p["state"]
+	sep = "&" if "?" in p["redirect_uri"] else "?"
+	return p["redirect_uri"] + sep + urllib.parse.urlencode(q)
+
+
 def init_oauth(app, env, deps):
 	# Registers all OAuth routes on the Flask app. `deps` is the plain object
 	# daemon.py constructs (Task 9): check_user_password, get_mail_password,
@@ -463,54 +519,23 @@ def init_oauth(app, env, deps):
 				store.revoke_token(row["id"])
 		return Response("", 200)
 
-	def form_binding(p, binding_expires):
-		# Request-binding token: ties a rendered form to the exact authorization
-		# request it was rendered for, so a captured form POST cannot be replayed
-		# against a different client/redirect/scope/challenge.
-		#
-		# state and code_challenge are arbitrary, client-controlled strings, so a
-		# plain "|".join(...) of the raw fields would be ambiguous (a "|" inside
-		# one field could be confused with the delimiter, letting distinct field
-		# tuples hash identically). Hash each field to a fixed-length digest
-		# before joining so no field's contents can be mistaken for a delimiter.
-		fields = (p["client_id"], p["redirect_uri"], p["scope"], p["state"], p["code_challenge"], str(binding_expires))
-		message = "authz|" + "|".join(hashlib.sha256(field.encode()).hexdigest() for field in fields)
-		return hmac.new(store.get_server_secret(), message.encode(), hashlib.sha256).hexdigest()
-
-	def render_authorize_form(p, error=None, show_totp=False, email=""):
-		binding_expires = int(time.time()) + AUTHZ_FORM_TTL
-		return render_template("oauth-authorize.html", hostname=env["PRIMARY_HOSTNAME"], client_name=_CLIENT_DISPLAY_NAMES.get(p["client_id"], p["client_id"]), fatal_error=None, error=error, show_totp=show_totp, email=email, binding=form_binding(p, binding_expires), binding_expires=binding_expires)
-
-	def render_authorize_fatal(message):
-		# Invalid client_id/redirect_uri: a 400 HTML page, NEVER a redirect
-		# (redirecting would create an open redirector).
-		return render_template("oauth-authorize.html", hostname=env["PRIMARY_HOSTNAME"], client_name=None, fatal_error=message, error=None, show_totp=False, email="", binding="", binding_expires=0), 400
-
-	def validate_authorize_request(p):
-		# Returns None if the request is acceptable, else a complete response.
-		client = oauth_clients.get_client(env, p["client_id"])
-		if client is None or "authorization_code" not in client.grant_types:
-			return render_authorize_fatal("This sign-in request came from an unknown application (invalid client_id).")
-		if p["redirect_uri"] not in client.redirect_uris:
-			return render_authorize_fatal("This sign-in request has an invalid redirect URI.")
-		if p["response_type"] != "code":
-			return _redirect_error(p, "unsupported_response_type")
-		scopes = set(p["scope"].split())
-		if not scopes or not scopes <= client.allowed_scopes:
-			return _redirect_error(p, "invalid_scope")
-		if not p["code_challenge"] or p["code_challenge_method"] != "S256":
-			# PKCE S256 is mandatory for every code client, public or confidential.
-			return _redirect_error(p, "invalid_request")
-		return None
-
 	@app.route("/oauth/authorize", methods=["GET", "POST"])
 	def oauth_authorize():
 		p = _authorize_request_params()
-		error_response = validate_authorize_request(p)
+		error_response = validate_authorize_request(p, env)
 		if error_response is not None:
 			return error_response
+		# Deferred, ImportError-guarded import: webauthn_auth imports oauth_server,
+		# so oauth_server must not import it at module scope (cycle). Until that
+		# module lands (Task 4) or when the feature is off, the passkey button is
+		# simply hidden and the form renders exactly as before.
+		try:
+			from webauthn_auth import is_passkeys_enabled  # noqa: PLC0415
+			passkeys_enabled = is_passkeys_enabled(env)
+		except ImportError:
+			passkeys_enabled = False
 		if request.method == "GET":
-			return render_authorize_form(p)
+			return render_authorize_form(p, env, store, passkeys_enabled=passkeys_enabled)
 		# POST: the OAuth params were just re-validated from the query string;
 		# the binding proves this POST belongs to a form we rendered for exactly
 		# these parameters and that it is not stale.
@@ -519,30 +544,26 @@ def init_oauth(app, env, deps):
 		except ValueError:
 			binding_expires = 0
 		now = int(time.time())
-		if binding_expires <= now or not hmac.compare_digest(form_binding(p, binding_expires), request.form.get("binding", "")):
-			return render_authorize_form(p, error="This sign-in form has expired. Please try again.")
+		if binding_expires <= now or not hmac.compare_digest(form_binding(p, binding_expires, store), request.form.get("binding", "")):
+			return render_authorize_form(p, env, store, error="This sign-in form has expired. Please try again.", passkeys_enabled=passkeys_enabled)
 		email = request.form.get("email", "").strip()
 		password = request.form.get("password", "")
 		totp_token = request.form.get("totp_token", "").strip() or None
 		if not email or not password or not deps.check_user_password(email, password):
 			deps.log_failed_login(request)
-			return render_authorize_form(p, error="Incorrect email address or password.", email=email)
+			return render_authorize_form(p, env, store, error="Incorrect email address or password.", email=email, passkeys_enabled=passkeys_enabled)
 		mfa_status = deps.validate_mfa(email, totp_token)
 		if mfa_status == "missing-totp-token":
 			# Two-step UX like the existing login page: re-render with the TOTP
 			# field visible and the email preserved (the password is deliberately
 			# never echoed back into HTML and must be re-entered).
-			return render_authorize_form(p, show_totp=True, email=email)
+			return render_authorize_form(p, env, store, show_totp=True, email=email, passkeys_enabled=passkeys_enabled)
 		if mfa_status == "invalid-totp-token":
 			deps.log_failed_login(request)
-			return render_authorize_form(p, error="Incorrect two factor authentication token.", show_totp=True, email=email)
+			return render_authorize_form(p, env, store, error="Incorrect two factor authentication token.", show_totp=True, email=email, passkeys_enabled=passkeys_enabled)
 		raw_code = secrets.token_urlsafe(32)
 		store.save_code(raw_code, p["client_id"], email, p["scope"], p["redirect_uri"], p["code_challenge"], "S256", now)
-		q = {"code": raw_code}
-		if p["state"]:
-			q["state"] = p["state"]
-		sep = "&" if "?" in p["redirect_uri"] else "?"
-		return redirect(p["redirect_uri"] + sep + urllib.parse.urlencode(q))
+		return redirect(build_code_redirect(p, raw_code))
 
 	@app.route("/oauth/userinfo", methods=["GET"])
 	def oauth_userinfo():

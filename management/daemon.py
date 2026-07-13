@@ -17,7 +17,7 @@ from functools import wraps
 
 from flask import Flask, request, render_template, Response, send_from_directory, make_response, g
 
-import auth, oauth_server, utils
+import auth, oauth_server, utils, webauthn_auth
 from mailconfig import get_mail_users, get_mail_users_ex, get_admins, add_mail_user, set_mail_password, remove_mail_user
 from mailconfig import get_mail_user_privileges, add_remove_mail_user_privilege
 from mailconfig import get_mail_aliases, get_mail_aliases_ex, get_mail_domains, add_mail_alias, remove_mail_alias
@@ -182,6 +182,7 @@ def index():
 
 		backup_s3_hosts=backup_s3_hosts,
 		csr_country_codes=csr_country_codes,
+		passkeys_enabled=webauthn_auth.is_passkeys_enabled(env),
 	)
 
 # Create a session key by checking the username/password in the Authorization header.
@@ -830,7 +831,12 @@ def log_failed_login(request):
 # Note: the OAuth layer itself is stateless per-request (sqlite-backed) and does
 # NOT require gunicorn's single-worker mode — only the legacy in-memory session
 # store in auth.py does. If sessions are ever retired, workers can scale.
-oauth_server.init_oauth(app, env, auth_service.deps(env, log_failed_login=log_failed_login))
+oauth_deps = auth_service.deps(env, log_failed_login=log_failed_login)
+oauth_server.init_oauth(app, env, oauth_deps)
+# Passkeys (WebAuthn) sign-in + enrollment routes. Registered immediately after
+# init_oauth, sharing the SAME deps object, because webauthn_auth reuses
+# oauth_server's shared store, bearer validation, and extracted authorize helpers.
+webauthn_auth.init_webauthn(app, env, oauth_deps)
 
 # Revoke any outstanding 'system' client-credentials tokens from before this restart
 # so that api.key rotation on restart keeps its instant-invalidation guarantee

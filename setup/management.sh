@@ -47,6 +47,7 @@ hide_output $venv/bin/pip install --upgrade \
 	flask dnspython python-dateutil expiringdict gunicorn \
 	qrcode[pil] pyotp "authlib==1.6.12" \
 	"idna>=2.0.0" "cryptography==37.0.2" psutil postfix-mta-sts-resolver \
+	"webauthn==1.8.0" "pydantic>=1.10,<2" "cbor2>=5.4.2.post1,<5.5" "pyOpenSSL==22.0.0" \
 	b2sdk boto3
 
 # CONFIGURATION

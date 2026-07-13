@@ -11,6 +11,7 @@ here instead.
 | Feature | Docs |
 |---|---|
 | **OAuth 2.0 authentication** — a built-in authorization server for the management API, control panel, Roundcube SSO, and IMAP/SMTP; Bearer as the primary API scheme with HTTP Basic demoted to an opt-out legacy path | [oauth.md](oauth.md) |
+| **Passkeys (WebAuthn/FIDO2) sign-in** — phishing-resistant, passwordless browser sign-in at the OAuth authorize endpoint (control panel + Roundcube SSO), with self-service enrollment and management; a user-verified passkey satisfies MFA. Feature-flagged with `auth.passkeys` | [passkeys.md](passkeys.md) |
 | **Testing-only Docker container** — a systemd-in-Docker image plus a `MIAB_TEST_MODE` installer flag that relaxes FQDN/public-DNS/VPS-dependent validation, so the full stack can run in an isolated local/lab environment for development and QA (not for production) | [../tests/docker/README.md](../tests/docker/README.md) |
 
 ## Releases & tagging

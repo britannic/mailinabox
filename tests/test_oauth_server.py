@@ -621,7 +621,12 @@ def test_authorize_get_renders_standalone_form(box):
 	assert 'name="totp_token"' not in html  # hidden until needed
 	assert re.search(r'name="binding" value="[0-9a-f]{64}"', html)
 	assert "box.example.com" in html
-	assert "<script" not in html  # no inline JS: CSP-proof by construction
+	# Passkeys (Task 9) add a nonced inline <script> when the feature is enabled
+	# (the default), so "no inline JS" no longer holds. CSP-proof by construction
+	# now means every <script> is nonce-gated and there are no inline on*= handlers.
+	for tag in re.findall(r"<script[^>]*>", html):
+		assert "nonce=" in tag
+	assert "onclick=" not in html and "onload=" not in html
 
 
 def test_authorize_unknown_client_400_never_redirects(box):
@@ -887,3 +892,84 @@ def test_validate_bearer_client_credentials_token(box):
 	raw, _ = box.store.create_token("access", "system", None, "admin", int(time.time()) + 600)
 	info = oauth_server.validate_bearer(box.env, raw, "admin", box.deps)
 	assert info == {"user_email": None, "scopes": {"admin"}, "client_id": "system"}
+
+
+# ---------------------------------------------------------------------------
+# Passkeys Task 1: authorize helpers extracted to module scope
+# ---------------------------------------------------------------------------
+
+def test_build_code_redirect_appends_code_and_state():
+	# Extracted from the inline authorize success path so the passkey sign-in
+	# ceremony (Task 6) can return the same URL in a JSON body. It returns a URL
+	# string, not a Flask response.
+	p = {"redirect_uri": PANEL_REDIRECT, "state": "st123"}
+	assert oauth_server.build_code_redirect(p, "the-code") == PANEL_REDIRECT + "?code=the-code&state=st123"
+	p2 = {"redirect_uri": PANEL_REDIRECT + "?x=1", "state": ""}
+	assert oauth_server.build_code_redirect(p2, "c2") == PANEL_REDIRECT + "?x=1&code=c2"
+
+
+def test_validate_authorize_request_is_module_scope(box):
+	# The passkey module (Task 6) imports this from module scope; it was a closure
+	# inside init_oauth, unreachable from another module. A valid authorize request
+	# returns None (acceptable); the extracted logic is otherwise identical.
+	assert callable(oauth_server.validate_authorize_request)
+	_, challenge = pkce_pair()
+	p = {"client_id": "panel", "redirect_uri": PANEL_REDIRECT, "response_type": "code", "scope": "admin profile", "state": "st123", "code_challenge": challenge, "code_challenge_method": "S256"}
+	assert oauth_server.validate_authorize_request(p, box.env) is None
+
+
+def test_validate_authorize_request_fatal_for_unknown_client(box):
+	# An unknown client_id still yields the 400 HTML fatal page (never a redirect).
+	p = {"client_id": "evil", "redirect_uri": PANEL_REDIRECT, "response_type": "code", "scope": "admin profile", "state": "", "code_challenge": "x", "code_challenge_method": "S256"}
+	with box.app.test_request_context():
+		html, status = oauth_server.validate_authorize_request(p, box.env)
+	assert status == 400
+	assert "client_id" in html
+
+
+# ---------------------------------------------------------------------------
+# Task 9: authorize passkey button + sign-in ceremony script; daemon wiring
+# ---------------------------------------------------------------------------
+
+def test_authorize_get_shows_passkey_button_when_enabled(box, monkeypatch):
+	import webauthn_auth  # noqa: PLC0415
+	monkeypatch.setattr(webauthn_auth, "is_passkeys_enabled", lambda env: True)
+	_, challenge = pkce_pair()
+	r = box.http.get(authz_url(challenge))
+	assert r.status_code == 200
+	html = r.get_data(as_text=True)
+	assert "Sign in with a passkey" in html
+	assert 'id="passkeyButton"' in html
+	# The ceremony script is the FIRST (and only) inline script and is nonce-gated.
+	scripts = re.findall(r"<script[^>]*>", html)
+	assert scripts and all("nonce=" in tag for tag in scripts)
+	assert "/auth/webauthn/authenticate/begin" in html
+	assert "/auth/webauthn/authenticate/finish" in html
+	assert "navigator.credentials.get" in html
+	assert "window.location" in html  # assigns the JSON redirect (no HTTP 302)
+
+
+def test_authorize_get_hides_passkey_button_when_disabled(box, monkeypatch):
+	import webauthn_auth  # noqa: PLC0415
+	monkeypatch.setattr(webauthn_auth, "is_passkeys_enabled", lambda env: False)
+	_, challenge = pkce_pair()
+	r = box.http.get(authz_url(challenge))
+	assert r.status_code == 200
+	html = r.get_data(as_text=True)
+	assert "Sign in with a passkey" not in html
+	assert "passkeyButton" not in html
+	assert "/auth/webauthn/authenticate/begin" not in html
+	assert "<script" not in html  # feature off -> zero inline JS
+
+
+def test_daemon_wires_init_webauthn_after_init_oauth():
+	path = os.path.join(os.path.dirname(__file__), "..", "management", "daemon.py")
+	with open(path, encoding="utf-8") as f:  # noqa: FURB101 -- os.path/open mirrors this file's existing style
+		src = f.read()
+	assert re.search(r"^import\b.*\bwebauthn_auth\b", src, re.MULTILINE)
+	m_oauth = re.search(r"oauth_server\.init_oauth\(app, env, (\w+)\)", src)
+	m_wa = re.search(r"webauthn_auth\.init_webauthn\(app, env, (\w+)\)", src)
+	assert m_oauth is not None, "expected oauth_server.init_oauth(app, env, <deps>)"
+	assert m_wa is not None, "expected webauthn_auth.init_webauthn(app, env, <deps>)"
+	assert m_oauth.group(1) == m_wa.group(1), "init_webauthn must reuse the SAME deps object"
+	assert m_oauth.end() <= m_wa.start(), "init_webauthn must be wired after init_oauth"

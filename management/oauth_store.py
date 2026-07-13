@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS oauth_tokens (id INTEGER PRIMARY KEY AUTOINCREMENT, t
 CREATE INDEX IF NOT EXISTS idx_tokens_origin ON oauth_tokens (origin_code_hash);
 CREATE INDEX IF NOT EXISTS idx_tokens_user ON oauth_tokens (user_email, revoked_at);
 CREATE INDEX IF NOT EXISTS idx_codes_expires ON oauth_codes (expires_at);
+CREATE TABLE IF NOT EXISTS webauthn_credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, user_email TEXT NOT NULL, credential_id BLOB UNIQUE NOT NULL, public_key BLOB NOT NULL, sign_count INTEGER NOT NULL, transports TEXT, aaguid TEXT, name TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER);
+CREATE INDEX IF NOT EXISTS idx_webauthn_creds_user ON webauthn_credentials (user_email);
+CREATE TABLE IF NOT EXISTS webauthn_challenges (challenge TEXT PRIMARY KEY, user_email TEXT, type TEXT NOT NULL, expires_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_webauthn_chal_expires ON webauthn_challenges (expires_at);
 """
 
 
@@ -79,6 +83,11 @@ class OAuthStore:
 		# Execute a SELECT query and return fetchone(), serializing with _lock.
 		with self._lock:
 			return self.conn.execute(sql, params).fetchone()
+
+	def _execute_all(self, sql, params=()):
+		# Execute a SELECT query and return fetchall(), serializing with _lock.
+		with self._lock:
+			return self.conn.execute(sql, params).fetchall()
 
 	def _write(self, sql, params=()):
 		# Execute an INSERT/UPDATE/DELETE and return (rowcount, lastrowid), serializing with _lock.
@@ -168,6 +177,98 @@ class OAuthStore:
 		rowcount, _ = self._write("UPDATE oauth_tokens SET revoked_at = ? WHERE user_email = ? AND revoked_at IS NULL", (now, user_email))
 		return rowcount
 
+	# --- WebAuthn challenges ---
+
+	def save_webauthn_challenge(self, raw_challenge, user_email, type, now=None):
+		# Store a single-use WebAuthn ceremony challenge. The challenge is the
+		# base64url of the raw nonce sent to the browser — a public value, not
+		# a secret (unlike codes/tokens), and py_webauthn's verify_* needs the
+		# raw bytes back, so it is stored verbatim rather than hashed. TTL 120s.
+		# The row's existence (correct type, unexpired, unconsumed) is the
+		# authoritative issue/single-use/anti-replay gate. user_email is the
+		# enrolling user for 'registration' and NULL for usernameless
+		# 'authentication' (sign-in).
+		now = _now(now)
+		self._write(
+			"INSERT INTO webauthn_challenges (challenge, user_email, type, expires_at) VALUES (?, ?, ?, ?)",
+			(raw_challenge, user_email, type, now + 120))
+
+	def take_webauthn_challenge(self, raw_challenge, type, now=None):
+		# Atomic single-use claim. Unlike take_code (which marks used_at and
+		# RETAINS the row for replay-family detection), a challenge is pure
+		# single-use: read the row to recover user_email, then a guarded DELETE
+		# is the only writer, so two concurrent redemptions cannot both win
+		# (loser sees rowcount==0). Returns the row dict (incl. user_email) on a
+		# winning claim, else None (unknown / wrong type / expired / already
+		# consumed). A wrong-type or expired take never consumes the row.
+		now = _now(now)
+		row = self._execute_one("SELECT * FROM webauthn_challenges WHERE challenge = ? AND type = ?", (raw_challenge, type))
+		if row is None:
+			return None
+		rowcount, _ = self._write("DELETE FROM webauthn_challenges WHERE challenge = ? AND type = ? AND expires_at > ?", (raw_challenge, type, now))
+		if rowcount == 1:
+			return dict(row)
+		return None
+
+	def purge_webauthn_challenges(self, now=None):
+		# Delete every expired challenge. Folded into purge() (below) so
+		# daily_tasks.sh / setup need no edit. Challenges carry no retention
+		# window (unlike codes/tokens): a 120s-TTL single-use nonce is dead the
+		# instant it expires. Returns rows deleted.
+		now = _now(now)
+		rowcount, _ = self._write("DELETE FROM webauthn_challenges WHERE expires_at <= ?", (now,))
+		return rowcount
+
+	def count_outstanding_webauthn_challenges(self, type, now=None):  # noqa: A002
+		# Number of live (unexpired) challenges of the given type. webauthn_auth's
+		# begin-endpoint guard uses this to cap the unconsumed-authentication
+		# backlog; expired rows are ignored (the nightly purge clears them), so
+		# only real pressure on the shared connection counts toward the ceiling.
+		now = _now(now)
+		row = self._execute_one("SELECT COUNT(*) FROM webauthn_challenges WHERE type = ? AND expires_at > ?", (type, now))
+		return row[0]
+
+	# --- webauthn credentials ---
+
+	def add_webauthn_credential(self, user_email, credential_id, public_key, sign_count, transports, aaguid, name, now=None):
+		# Persist a newly registered passkey. credential_id and public_key are
+		# raw bytes stored as BLOBs; transports is a JSON-array string or None.
+		# Returns the new row id.
+		now = _now(now)
+		_, lastrowid = self._write(
+			"INSERT INTO webauthn_credentials (user_email, credential_id, public_key, sign_count, transports, aaguid, name, created_at, last_used_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+			(user_email, credential_id, public_key, sign_count, transports, aaguid, name, now))
+		return lastrowid
+
+	def get_webauthn_credentials(self, user_email):
+		# All of one user's passkeys, oldest first, as row dicts.
+		rows = self._execute_all("SELECT * FROM webauthn_credentials WHERE user_email = ? ORDER BY created_at, id", (user_email,))
+		return [dict(r) for r in rows]
+
+	def get_webauthn_credential_by_id(self, credential_id):
+		# Look up a passkey by its raw credential-id bytes — usernameless sign-in
+		# has only the credential id to go on. Returns the row dict or None.
+		row = self._execute_one("SELECT * FROM webauthn_credentials WHERE credential_id = ?", (credential_id,))
+		return dict(row) if row is not None else None
+
+	def update_webauthn_sign_count(self, cred_row_id, sign_count, now=None):
+		# Advance the stored signature counter after a successful assertion and
+		# record when the passkey was last used (one row, keyed by id).
+		now = _now(now)
+		self._write("UPDATE webauthn_credentials SET sign_count = ?, last_used_at = ? WHERE id = ?", (sign_count, now, cred_row_id))
+
+	def rename_webauthn_credential(self, cred_row_id, user_email, name):
+		# Scoped by user_email so a user can only rename their own passkey.
+		# Returns True iff exactly one row matched.
+		rowcount, _ = self._write("UPDATE webauthn_credentials SET name = ? WHERE id = ? AND user_email = ?", (name, cred_row_id, user_email))
+		return rowcount == 1
+
+	def delete_webauthn_credential(self, cred_row_id, user_email):
+		# Scoped by user_email so a user can only revoke their own passkey.
+		# Returns True iff exactly one row matched.
+		rowcount, _ = self._write("DELETE FROM webauthn_credentials WHERE id = ? AND user_email = ?", (cred_row_id, user_email))
+		return rowcount == 1
+
 	def purge(self, now=None, keep_seconds=7 * 86400):
 		# Nightly cleanup (management/daily_tasks.sh). Rows are kept for
 		# keep_seconds after they stop being live: codes after expiry, tokens
@@ -178,6 +279,7 @@ class OAuthStore:
 		deleted = rowcount
 		rowcount, _ = self._write("DELETE FROM oauth_tokens WHERE COALESCE(revoked_at, expires_at) < ?", (cutoff,))
 		deleted += rowcount
+		deleted += self.purge_webauthn_challenges(now)
 		return deleted
 
 	def password_state(self, password_hash, mfa_state_json):
