@@ -205,6 +205,15 @@ class OAuthStore:
 			return dict(row)
 		return None
 
+	def purge_webauthn_challenges(self, now=None):
+		# Delete every expired challenge. Folded into purge() (below) so
+		# daily_tasks.sh / setup need no edit. Challenges carry no retention
+		# window (unlike codes/tokens): a 120s-TTL single-use nonce is dead the
+		# instant it expires. Returns rows deleted.
+		now = _now(now)
+		rowcount, _ = self._write("DELETE FROM webauthn_challenges WHERE expires_at <= ?", (now,))
+		return rowcount
+
 	def purge(self, now=None, keep_seconds=7 * 86400):
 		# Nightly cleanup (management/daily_tasks.sh). Rows are kept for
 		# keep_seconds after they stop being live: codes after expiry, tokens
@@ -215,6 +224,7 @@ class OAuthStore:
 		deleted = rowcount
 		rowcount, _ = self._write("DELETE FROM oauth_tokens WHERE COALESCE(revoked_at, expires_at) < ?", (cutoff,))
 		deleted += rowcount
+		deleted += self.purge_webauthn_challenges(now)
 		return deleted
 
 	def password_state(self, password_hash, mfa_state_json):

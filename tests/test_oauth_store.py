@@ -373,3 +373,24 @@ def test_webauthn_challenge_concurrent_single_winner(store):
 	assert len(winners) == 1
 	assert winners[0]["challenge"] == "chal-race"
 	assert winners[0]["user_email"] == "u@x"
+
+
+
+def test_purge_webauthn_challenges(store):
+	# Expired challenges are deleted; live ones are kept. No retention window
+	# (unlike codes/tokens): a 120s single-use nonce is dead the instant it expires.
+	store.save_webauthn_challenge("chal-old", "u@x", "registration", now=NOW - 200)   # expires_at = NOW - 80 (expired)
+	store.save_webauthn_challenge("chal-live", None, "authentication", now=NOW - 30)  # expires_at = NOW + 90 (live)
+	assert store.purge_webauthn_challenges(now=NOW) == 1
+	assert store.conn.execute("SELECT challenge FROM webauthn_challenges").fetchone()[0] == "chal-live"
+
+
+def test_purge_folds_in_challenges(env):
+	# OAuthStore.purge() must also drop expired challenges so daily_tasks.sh
+	# (which only calls purge()) cleans them up with no edit (spec §7).
+	s = OAuthStore(db_path(env))
+	s.save_webauthn_challenge("chal-old", "u@x", "registration", now=NOW - 200)   # expired at NOW - 80
+	s.save_webauthn_challenge("chal-live", None, "authentication", now=NOW - 30)  # live until NOW + 90
+	# No codes/tokens exist, so purge()'s count is exactly the one expired challenge.
+	assert s.purge(now=NOW) == 1
+	assert s.conn.execute("SELECT COUNT(*) FROM webauthn_challenges").fetchone()[0] == 1
