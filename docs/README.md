@@ -30,11 +30,20 @@ Tags are **annotated** (`git tag -a`) — the control panel's version check runs
 `git describe`, which only sees annotated tags. List them chronologically with
 `git tag --sort=v:refname`.
 
-**Install or update a server** by naming the tag explicitly (the `bootstrap.sh`
-default is this fork's latest release, not upstream's):
+**Install or update a server** with the fork's bootstrap script (its `TAG=`
+default is this fork's latest release, not upstream's — using
+`mailinabox.email/setup.sh` would install upstream instead):
 
 ```bash
-TAG=v76-hrc.1 curl -s https://<your-host>/setup.sh | sudo bash
+curl -fsS https://raw.githubusercontent.com/britannic/mailinabox/master/setup/bootstrap.sh | sudo bash
+```
+
+To install a specific release rather than the latest, name the tag explicitly.
+The variable must be set on the `bash` side of the pipe (an env var prefixed to
+`curl` never reaches the script, and `sudo` strips the environment):
+
+```bash
+curl -fsS https://raw.githubusercontent.com/britannic/mailinabox/master/setup/bootstrap.sh | sudo TAG=v76-hrc.2 bash
 ```
 
 **Cutting a release:**
@@ -43,7 +52,7 @@ TAG=v76-hrc.1 curl -s https://<your-host>/setup.sh | sudo bash
    to the new tag (it must be the exact tag with nothing after it — the version
    check parses it with a greedy regex).
 2. Merge to `master`.
-3. Tag it: `git tag -a v76-hrc.2 -m "…" && git push origin v76-hrc.2`.
+3. Tag it: `git tag -a <new-tag> -m "…" && git push origin <new-tag>`.
 
 The control panel's *"up to date / update available"* status compares the
 installed `git describe` tag against the `TAG=` line in this fork's
