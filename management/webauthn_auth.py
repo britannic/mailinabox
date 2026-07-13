@@ -175,7 +175,45 @@ def init_webauthn(app, env, deps):  # noqa: ARG001
 	@app.route("/auth/webauthn/register/finish", methods=["POST"])
 	def webauthn_register_finish():
 		_passkeys_enabled_or_404(env)
-		return jsonify({"error": "not implemented"}), 501  # body: T5
+		user_email = _bearer_admin_email(env, deps)
+		if user_email is None:
+			return Response("", 401, {"WWW-Authenticate": "Bearer"})
+		store = oauth_server.current_store(env)
+		body = request.get_json(silent=True)
+		if not isinstance(body, dict):
+			return jsonify({"error": "Could not verify passkey."}), 400
+		challenge_b64 = _challenge_from_client_data(body)
+		if challenge_b64 is None:
+			return jsonify({"error": "Could not verify passkey."}), 400
+		# Single-use claim FIRST: a failed/forged finish still burns the
+		# challenge (row existence is the authoritative anti-replay gate, §9.3).
+		row = store.take_webauthn_challenge(challenge_b64, "registration")
+		if row is None:
+			return jsonify({"error": "This request expired, please try again."}), 400
+		try:
+			verification = webauthn.verify_registration_response(
+				# py_webauthn 1.8.0's verify_registration_response requires an
+				# actual RegistrationCredential, not a raw JSON string (verified
+				# empirically against the pinned version); parse it here.
+				credential=RegistrationCredential.parse_raw(request.get_data(as_text=True)),
+				expected_challenge=_b64url_decode(challenge_b64),
+				expected_rp_id=env["PRIMARY_HOSTNAME"],
+				expected_origin="https://" + env["PRIMARY_HOSTNAME"],
+				require_user_verification=True,
+			)
+		except Exception:
+			# Generic error, no internal detail (§11). This endpoint is
+			# Bearer-authenticated (the admin's own device), so a failed
+			# attestation is NOT fed to fail2ban — log_failed_login is reserved
+			# for the unauthenticated sign-in assertions (T6).
+			app.logger.warning("passkey registration verification failed for %s", user_email)
+			return jsonify({"error": "Could not verify passkey."}), 400
+		transports = body.get("response", {}).get("transports")
+		transports_json = json.dumps(transports) if transports else None
+		store.add_webauthn_credential(user_email, verification.credential_id, verification.credential_public_key, verification.sign_count, transports_json, verification.aaguid, "Passkey")
+		cred = store.get_webauthn_credential_by_id(verification.credential_id)
+		app.logger.info("passkey enrolled for %s (cred %s, aaguid %s)", user_email, verification.credential_id.hex()[:16], verification.aaguid)
+		return jsonify({"id": cred["id"], "name": cred["name"], "created_at": cred["created_at"], "last_used_at": cred["last_used_at"], "aaguid": cred["aaguid"]})
 
 	@app.route("/auth/webauthn/authenticate/begin", methods=["POST"])
 	def webauthn_authenticate_begin():

@@ -408,3 +408,36 @@ def test_register_begin_returns_options_and_stores_challenge(wbox):
 
 def test_register_begin_without_bearer_401(wbox):
 	assert wbox.http.post("/auth/webauthn/register/begin").status_code == 401
+
+
+def test_register_finish_happy_path_creates_credential(wbox):
+	headers = _admin_headers(wbox, "alice@box.example.com")
+	options_json = wbox.http.post("/auth/webauthn/register/begin", headers=headers).get_data(as_text=True)
+	attestation = _register_attestation(options_json)
+	r = wbox.http.post("/auth/webauthn/register/finish", json=attestation, headers=headers)
+	assert r.status_code == 200, r.get_data(as_text=True)
+	created = r.get_json()
+	assert created["name"] == "Passkey"
+	assert created["last_used_at"] is None
+	creds = wbox.store.get_webauthn_credentials("alice@box.example.com")
+	assert len(creds) == 1
+	assert creds[0]["id"] == created["id"]
+
+
+def test_register_finish_rejects_uv_absent(wbox):
+	headers = _admin_headers(wbox, "alice@box.example.com")
+	options_json = wbox.http.post("/auth/webauthn/register/begin", headers=headers).get_data(as_text=True)
+	attestation = _register_attestation(options_json, user_verified=False)
+	r = wbox.http.post("/auth/webauthn/register/finish", json=attestation, headers=headers)
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "Could not verify passkey."
+	assert wbox.store.get_webauthn_credentials("alice@box.example.com") == []
+
+
+def test_register_finish_rejects_wrong_origin(wbox):
+	headers = _admin_headers(wbox, "alice@box.example.com")
+	options_json = wbox.http.post("/auth/webauthn/register/begin", headers=headers).get_data(as_text=True)
+	attestation = _register_attestation(options_json, origin="https://evil.example.com")
+	r = wbox.http.post("/auth/webauthn/register/finish", json=attestation, headers=headers)
+	assert r.status_code == 400
+	assert wbox.store.get_webauthn_credentials("alice@box.example.com") == []
