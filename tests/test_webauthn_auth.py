@@ -8,7 +8,7 @@
 #
 # Run under Python 3.10-3.12 to match the box (webauthn==1.8.0 needs pydantic<2).
 #
-# ruff: noqa: S101, SLF001, PLC0415
+# ruff: noqa: S101, SLF001, ARG005, S107
 
 import base64
 import hashlib
@@ -456,3 +456,10 @@ def test_register_finish_rejects_challenge_user_mismatch(wbox):
 	# No credential is bound to EITHER identity.
 	assert wbox.store.get_webauthn_credentials("bob@box.example.com") == []
 	assert wbox.store.get_webauthn_credentials("alice@box.example.com") == []
+
+
+def test_register_endpoints_404_when_flag_off(wbox, monkeypatch):
+	monkeypatch.setattr(webauthn_auth, "is_passkeys_enabled", lambda env: False)
+	headers = _admin_headers(wbox, "alice@box.example.com")
+	assert wbox.http.post("/auth/webauthn/register/begin", headers=headers).status_code == 404
+	assert wbox.http.post("/auth/webauthn/register/finish", json={}, headers=headers).status_code == 404

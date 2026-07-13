@@ -155,11 +155,11 @@ def _passkeys_enabled_or_404(env):
 		abort(404)
 
 
-def init_webauthn(app, env, deps):  # noqa: ARG001
+def init_webauthn(app, env, deps):
 	# Registers the six WebAuthn routes on the Flask app, mirroring init_oauth.
 	# Called from daemon.py right after init_oauth (T9). `deps` is consumed by the
-	# route bodies added in later tasks: registration (T5), sign-in (T6),
-	# management (T7). Every endpoint 404s when the feature flag is off.
+	# route bodies: registration (T5, done), sign-in (T6), management (T7).
+	# Every endpoint 404s when the feature flag is off.
 
 	@app.route("/auth/webauthn/register/begin", methods=["POST"])
 	def webauthn_register_begin():
@@ -206,11 +206,12 @@ def init_webauthn(app, env, deps):  # noqa: ARG001
 				expected_origin="https://" + env["PRIMARY_HOSTNAME"],
 				require_user_verification=True,
 			)
-		except Exception:
-			# Generic error, no internal detail (§11). This endpoint is
-			# Bearer-authenticated (the admin's own device), so a failed
-			# attestation is NOT fed to fail2ban — log_failed_login is reserved
-			# for the unauthenticated sign-in assertions (T6).
+		except Exception:  # noqa: BLE001 -- intentionally blind: any verify failure (bad
+			# signature, wrong RP/origin, UV absent, malformed attestation) must
+			# collapse to the SAME generic error (§11), no internal detail. This
+			# endpoint is Bearer-authenticated (the admin's own device), so a
+			# failed attestation is NOT fed to fail2ban -- log_failed_login is
+			# reserved for the unauthenticated sign-in assertions (T6).
 			app.logger.warning("passkey registration verification failed for %s", user_email)
 			return jsonify({"error": "Could not verify passkey."}), 400
 		transports = body.get("response", {}).get("transports")
