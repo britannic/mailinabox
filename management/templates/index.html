@@ -142,6 +142,7 @@
                 <li class="divider"></li>
                 <li class="dropdown-header">Your Account</li>
                 <li><a href="#mfa">Two-Factor Authentication</a></li>
+                {% if passkeys_enabled %}<li><a href="#passkeys">Passkeys</a></li>{% endif %}
               </ul>
             </li>
             <li><a href="#sync_guide" class="if-logged-in">Contacts/Calendar</a></li>
@@ -177,6 +178,10 @@
 
       <div id="panel_mfa" class="admin_panel">
       {% include "mfa.html" %}
+      </div>
+
+      <div id="panel_passkeys" class="admin_panel">
+      {% include "passkeys.html" %}
       </div>
 
       <div id="panel_login" class="admin_panel">

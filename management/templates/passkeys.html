@@ -1,0 +1,222 @@
+<style>
+  #passkeys-list .passkey-none { color: #888; }
+  #passkeys-unsupported, #passkeys-error { display: none; }
+  #passkeys-unsupported.visible, #passkeys-error.visible { display: block; }
+  #passkeys-table td .btn + .btn { margin-left: 6px; }
+</style>
+
+{% if passkeys_enabled %}
+<h2>Passkeys</h2>
+
+<p>Passkeys let you sign in to this control panel without a password, using your
+device's fingerprint, face, screen lock, or a security key. A passkey is
+phishing-resistant and counts as two-factor authentication on its own, so you are
+not asked for a six-digit code when you sign in with one.</p>
+
+<p>Your password still works everywhere, so adding or removing passkeys can never
+lock you out of your account.</p>
+
+<div id="passkeys-unsupported" class="panel panel-warning">
+  <div class="panel-body">This browser does not support passkeys, so you cannot add one here. You can still sign in with your password.</div>
+</div>
+
+<div id="passkeys-error" class="panel panel-danger">
+  <div class="panel-body"></div>
+</div>
+
+<table class="table" id="passkeys-table">
+  <thead>
+    <tr><th>Name</th><th>Added</th><th>Last Used</th><th></th></tr>
+  </thead>
+  <tbody id="passkeys-list"></tbody>
+</table>
+
+<button type="button" id="passkey-add-btn" class="btn btn-primary">Add a passkey</button>
+
+<script nonce="{{ csp_nonce }}">
+  function passkey_b64url_to_buf(s) {
+    s = s.replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    var bin = atob(s);
+    var buf = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+    return buf.buffer;
+  }
+
+  function passkey_buf_to_b64url(buf) {
+    var bytes = new Uint8Array(buf);
+    var s = '';
+    for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function passkey_show_error(msg) {
+    var box = document.getElementById('passkeys-error');
+    box.querySelector('.panel-body').textContent = msg;
+    box.classList.add('visible');
+  }
+
+  function passkey_hide_error() {
+    var box = document.getElementById('passkeys-error');
+    box.querySelector('.panel-body').textContent = '';
+    box.classList.remove('visible');
+  }
+
+  function passkey_fmt_time(secs) {
+    if (!secs) return 'never';
+    return new Date(secs * 1000).toLocaleString();
+  }
+
+  function render_passkeys(creds) {
+    var tbody = document.getElementById('passkeys-list');
+    tbody.innerHTML = '';
+    if (!creds || creds.length === 0) {
+      var tr = document.createElement('tr');
+      var td = document.createElement('td');
+      td.colSpan = 4;
+      td.className = 'passkey-none';
+      td.textContent = 'You have not added any passkeys yet.';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+    creds.forEach(function(cred) {
+      var tr = document.createElement('tr');
+
+      var nameTd = document.createElement('td');
+      nameTd.textContent = cred.name;
+      tr.appendChild(nameTd);
+
+      var addedTd = document.createElement('td');
+      addedTd.textContent = passkey_fmt_time(cred.created_at);
+      tr.appendChild(addedTd);
+
+      var usedTd = document.createElement('td');
+      usedTd.textContent = passkey_fmt_time(cred.last_used_at);
+      tr.appendChild(usedTd);
+
+      var actTd = document.createElement('td');
+      var renameBtn = document.createElement('button');
+      renameBtn.type = 'button';
+      renameBtn.className = 'btn btn-default btn-xs';
+      renameBtn.textContent = 'Rename';
+      renameBtn.addEventListener('click', function() { do_rename_passkey(cred.id, cred.name); });
+      actTd.appendChild(renameBtn);
+
+      var revokeBtn = document.createElement('button');
+      revokeBtn.type = 'button';
+      revokeBtn.className = 'btn btn-danger btn-xs';
+      revokeBtn.textContent = 'Revoke';
+      revokeBtn.addEventListener('click', function() { do_revoke_passkey(cred.id, cred.name); });
+      actTd.appendChild(revokeBtn);
+
+      tr.appendChild(actTd);
+      tbody.appendChild(tr);
+    });
+  }
+
+  function show_passkeys() {
+    passkey_hide_error();
+    var addBtn = document.getElementById('passkey-add-btn');
+    if (!window.PublicKeyCredential) {
+      document.getElementById('passkeys-unsupported').classList.add('visible');
+      addBtn.setAttribute('disabled', '');
+    }
+    api(
+      '/auth/webauthn/credentials',
+      'GET',
+      {},
+      function(res) { render_passkeys(res.credentials); },
+      function() { passkey_show_error('Could not load your passkeys.'); }
+    );
+  }
+
+  function do_add_passkey() {
+    passkey_hide_error();
+    if (!window.PublicKeyCredential) return;
+
+    api(
+      '/auth/webauthn/register/begin',
+      'POST',
+      {},
+      function(options) {
+        // py_webauthn options_to_json returns base64url; the browser API wants ArrayBuffers.
+        options.challenge = passkey_b64url_to_buf(options.challenge);
+        options.user.id = passkey_b64url_to_buf(options.user.id);
+        if (options.excludeCredentials) {
+          options.excludeCredentials.forEach(function(c) { c.id = passkey_b64url_to_buf(c.id); });
+        }
+        navigator.credentials.create({ publicKey: options })
+          .then(function(cred) {
+            var body = {
+              id: cred.id,
+              rawId: passkey_buf_to_b64url(cred.rawId),
+              type: cred.type,
+              response: {
+                attestationObject: passkey_buf_to_b64url(cred.response.attestationObject),
+                clientDataJSON: passkey_buf_to_b64url(cred.response.clientDataJSON),
+                transports: cred.response.getTransports ? cred.response.getTransports() : []
+              },
+              clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {}
+            };
+            api(
+              '/auth/webauthn/register/finish',
+              'POST',
+              JSON.stringify(body),
+              function(created) { prompt_passkey_name(created.id, created.name); },
+              function() { passkey_show_error('Could not register the passkey. Please try again.'); }
+            );
+          })
+          .catch(function() { passkey_show_error('Passkey creation was cancelled or failed.'); });
+      },
+      function() { passkey_show_error('Could not start passkey registration.'); }
+    );
+  }
+
+  function prompt_passkey_name(id, current) {
+    var input = $('<input type="text" class="form-control">').val(current || 'Passkey');
+    var body = $('<div>')
+      .append($('<p>').text('Give this passkey a name so you can recognize it later.'))
+      .append(input);
+    show_modal_confirm(
+      'Name your passkey',
+      body,
+      'Save',
+      function() {
+        var name = ((input.val() || '').trim()) || current || 'Passkey';
+        api(
+          '/auth/webauthn/credentials/' + encodeURIComponent(id),
+          'PATCH',
+          JSON.stringify({ name: name }),
+          function() { show_passkeys(); },
+          function() { passkey_show_error('Could not rename the passkey.'); }
+        );
+      },
+      function() { show_passkeys(); }
+    );
+  }
+
+  function do_rename_passkey(id, current) {
+    prompt_passkey_name(id, current);
+  }
+
+  function do_revoke_passkey(id, name) {
+    show_modal_confirm(
+      'Revoke passkey',
+      'Remove the passkey "' + name + '"? You will no longer be able to sign in with it.',
+      'Revoke',
+      function() {
+        api(
+          '/auth/webauthn/credentials/' + encodeURIComponent(id),
+          'DELETE',
+          {},
+          function() { show_passkeys(); },
+          function() { passkey_show_error('Could not revoke the passkey.'); }
+        );
+      }
+    );
+  }
+
+  document.getElementById('passkey-add-btn').addEventListener('click', do_add_passkey);
+</script>
+{% endif %}

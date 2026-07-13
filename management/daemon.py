@@ -182,6 +182,7 @@ def index():
 
 		backup_s3_hosts=backup_s3_hosts,
 		csr_country_codes=csr_country_codes,
+		passkeys_enabled=webauthn_auth.is_passkeys_enabled(env),
 	)
 
 # Create a session key by checking the username/password in the Authorization header.
