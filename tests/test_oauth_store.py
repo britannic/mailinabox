@@ -457,3 +457,15 @@ def test_rename_and_delete_webauthn_credential_scoped(store):
 	# The owner can delete it.
 	assert store.delete_webauthn_credential(rowid, "alice@box.example.com") is True
 	assert store.get_webauthn_credential_by_id(CRED_ID) is None
+
+
+def test_count_outstanding_webauthn_challenges(store):
+	# Two live authentication challenges + one registration challenge.
+	store.save_webauthn_challenge("chal-a", None, "authentication", now=NOW)
+	store.save_webauthn_challenge("chal-b", None, "authentication", now=NOW)
+	store.save_webauthn_challenge("chal-r", "alice@box.example.com", "registration", now=NOW)
+	# Counts only live challenges of the requested type (type isolation).
+	assert store.count_outstanding_webauthn_challenges("authentication", now=NOW + 1) == 2
+	assert store.count_outstanding_webauthn_challenges("registration", now=NOW + 1) == 1
+	# TTL is now+120, so past expiry the live count drops to zero.
+	assert store.count_outstanding_webauthn_challenges("authentication", now=NOW + 121) == 0

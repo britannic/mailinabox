@@ -219,6 +219,15 @@ class OAuthStore:
 		rowcount, _ = self._write("DELETE FROM webauthn_challenges WHERE expires_at <= ?", (now,))
 		return rowcount
 
+	def count_outstanding_webauthn_challenges(self, type, now=None):  # noqa: A002
+		# Number of live (unexpired) challenges of the given type. webauthn_auth's
+		# begin-endpoint guard uses this to cap the unconsumed-authentication
+		# backlog; expired rows are ignored (the nightly purge clears them), so
+		# only real pressure on the shared connection counts toward the ceiling.
+		now = _now(now)
+		row = self._execute_one("SELECT COUNT(*) FROM webauthn_challenges WHERE type = ? AND expires_at > ?", (type, now))
+		return row[0]
+
 	# --- webauthn credentials ---
 
 	def add_webauthn_credential(self, user_email, credential_id, public_key, sign_count, transports, aaguid, name, now=None):
