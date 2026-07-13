@@ -441,3 +441,18 @@ def test_register_finish_rejects_wrong_origin(wbox):
 	r = wbox.http.post("/auth/webauthn/register/finish", json=attestation, headers=headers)
 	assert r.status_code == 400
 	assert wbox.store.get_webauthn_credentials("alice@box.example.com") == []
+
+
+def test_register_finish_rejects_challenge_user_mismatch(wbox):
+	wbox.deps.add_user("bob@box.example.com")
+	alice = _admin_headers(wbox, "alice@box.example.com")
+	bob = _admin_headers(wbox, "bob@box.example.com")
+	# Alice begins (challenge bound to alice); Bob tries to finish it.
+	options_json = wbox.http.post("/auth/webauthn/register/begin", headers=alice).get_data(as_text=True)
+	attestation = _register_attestation(options_json)
+	r = wbox.http.post("/auth/webauthn/register/finish", json=attestation, headers=bob)
+	assert r.status_code == 400
+	assert r.get_json()["error"] == "Could not verify passkey."
+	# No credential is bound to EITHER identity.
+	assert wbox.store.get_webauthn_credentials("bob@box.example.com") == []
+	assert wbox.store.get_webauthn_credentials("alice@box.example.com") == []

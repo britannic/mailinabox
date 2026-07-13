@@ -190,6 +190,11 @@ def init_webauthn(app, env, deps):  # noqa: ARG001
 		row = store.take_webauthn_challenge(challenge_b64, "registration")
 		if row is None:
 			return jsonify({"error": "This request expired, please try again."}), 400
+		if row["user_email"] != user_email:
+			# The challenge was issued to a DIFFERENT signed-in user; never bind
+			# a credential under a mismatched identity (spec §8.2). Generic error.
+			app.logger.warning("passkey registration challenge user mismatch (challenge=%s, caller=%s)", row["user_email"], user_email)
+			return jsonify({"error": "Could not verify passkey."}), 400
 		try:
 			verification = webauthn.verify_registration_response(
 				# py_webauthn 1.8.0's verify_registration_response requires an
