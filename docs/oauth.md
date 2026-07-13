@@ -58,7 +58,7 @@ one exception — it is served at the site root, without the `/admin` prefix.
 | `https://<HOST>/admin/oauth/authorize` | GET, POST | Authorization endpoint — renders the login form (GET) and, after validating credentials and a well-formed S256 code challenge, issues an authorization code (POST) |
 | `https://<HOST>/admin/oauth/token` | POST | Token endpoint — code exchange, refresh rotation, and `client_credentials` |
 | `https://<HOST>/admin/oauth/revoke` | POST | Token revocation (RFC 7009) |
-| `https://<HOST>/admin/oauth/userinfo` | GET | The signed-in user's email and privileges (Bearer token, `profile` scope) |
+| `https://<HOST>/admin/oauth/userinfo` | GET | The signed-in user's OIDC subject (`sub`), email, and privileges (Bearer token, `profile` scope) |
 | `https://<HOST>/.well-known/oauth-authorization-server` | GET | Authorization-server metadata (RFC 8414) |
 
 The **introspection** endpoint (RFC 7662) is intentionally *not* public.
@@ -83,7 +83,7 @@ and `code_challenge_methods_supported: [S256]`.
 |---|---|---|
 | `admin` | the control panel and management API (and local tooling) | `panel`, `system` |
 | `mail` | IMAP / SMTP submission (validated by Dovecot introspection) | `roundcube` |
-| `profile` | the UserInfo endpoint (email + privileges) | `panel`, `roundcube` |
+| `profile` | the UserInfo endpoint (`sub` + email + privileges) | `panel`, `roundcube` |
 
 A user-bound token with the `admin` scope additionally requires the user to hold
 the **admin privilege** at request time — losing admin invalidates access
@@ -153,8 +153,20 @@ $config['oauth_auth_uri']      = 'https://<HOST>/admin/oauth/authorize';
 $config['oauth_token_uri']     = 'https://<HOST>/admin/oauth/token';
 $config['oauth_identity_uri']  = 'https://<HOST>/admin/oauth/userinfo';
 $config['oauth_scope']         = 'mail profile';
+$config['oauth_pkce']          = 'S256';
 $config['oauth_login_redirect'] = false;
 ```
+
+Roundcube **1.7.0 or newer is required** for SSO: the authorization server
+mandates PKCE S256 for every authorization-code client, and Roundcube only
+gained PKCE support in 1.7 (`oauth_pkce`, default `S256`). Roundcube 1.6.x
+cannot complete this flow — its authorize request carries no
+`code_challenge` and is rejected with `invalid_request`.
+
+If SSO breaks after a future Roundcube upgrade, first confirm
+`oauth_pkce` is still `'S256'` in Roundcube's `config.inc.php`, then
+re-run `tests/docker/sso_login_test.sh` against a test container built
+from the new version to isolate which step of the flow fails.
 
 Because `oauth_login_redirect` is `false`, SSO appears as a **"Sign in with
 SSO"** button next to the normal password form rather than replacing it.

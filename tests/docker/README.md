@@ -87,6 +87,19 @@ anything but local/lab QA.
 cd tests/docker && ./smoke.sh   # build, boot, assert the box comes up
 ```
 
+## Upgrade verification tests
+
+With the container provisioned:
+
+- `./sso_login_test.sh` drives the full Roundcube "Sign in with SSO" flow
+  with curl (PKCE redirect → authorize form → code exchange →
+  authenticated session) and asserts Dovecot logged an
+  XOAUTH2/OAUTHBEARER login.
+- `./full_verification.sh` asserts box health after an upgrade: static
+  asset routing, entry-point lockdown (installer/config unreachable),
+  PHP-FPM version, Z-Push and Nextcloud reachability, and a clean
+  Roundcube error log.
+
 ## Reset
 
 ```bash

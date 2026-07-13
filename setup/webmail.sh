@@ -36,12 +36,12 @@ apt_install \
 #   https://github.com/mstilkerich/rcmcarddav/releases
 # The easiest way to get the package hashes is to run this script and get the hash from
 # the error message.
-VERSION=1.6.15
-HASH=1228dce33d7dd4085529d0ccc920deb603cd4e04
+VERSION=1.7.0
+HASH=5d2f1bde6d516fa61bf338c7534460208193fecd
 PERSISTENT_LOGIN_VERSION=bde7b6840c7d91de627ea14e81cf4133cbb3c07a # version 5.3
 HTML5_NOTIFIER_VERSION=68d9ca194212e15b3c7225eb6085dbcf02fd13d7 # version 0.6.4+
-CARDDAV_VERSION=4.4.3
-CARDDAV_HASH=74f8ba7aee33e78beb9de07f7f44b81f6071b644
+CARDDAV_VERSION=5.1.3
+CARDDAV_HASH=7cef0bde5b8cee2a33f8033a0c8c9ad888abccb3
 
 UPDATE_KEY=$VERSION:$PERSISTENT_LOGIN_VERSION:$HTML5_NOTIFIER_VERSION:$CARDDAV_VERSION
 
@@ -74,6 +74,10 @@ if [ $needs_update == 1 ]; then
 	tar -C /usr/local/lib --no-same-owner -zxf /tmp/roundcube.tgz
 	rm -rf /usr/local/lib/roundcubemail
 	mv /usr/local/lib/roundcubemail-$VERSION/ $RCM_DIR
+	# Remove the web installer: setup owns config generation, so it must
+	# never be reachable — and nginx's /mail/ alias would otherwise serve
+	# public_html/installer.php as a static file (source disclosure).
+	rm -rf $RCM_DIR/installer $RCM_DIR/public_html/installer.php
 	rm -f /tmp/roundcube.tgz
 
 	# install roundcube persistent_login plugin
@@ -175,6 +179,10 @@ cat > $RCM_CONFIG <<EOF;
 \$config['oauth_identity_fields'] = ['email'];
 \$config['oauth_scope'] = 'mail profile';
 \$config['oauth_login_redirect'] = false;
+/* PKCE S256 is mandatory at the box's authorization server (docs/oauth.md);
+   this is Roundcube 1.7's default, pinned here so a future default change
+   can't silently break SSO. */
+\$config['oauth_pkce'] = 'S256';
 ?>
 EOF
 
@@ -191,18 +199,17 @@ cat > ${RCM_PLUGIN_DIR}/carddav/config.inc.php <<EOF;
 <?php
 /* Do not edit. Written by Mail-in-a-Box. Regenerated on updates. */
 \$prefs['_GLOBAL']['hide_preferences'] = true;
-\$prefs['_GLOBAL']['suppress_version_warning'] = true;
 \$prefs['ownCloud'] = array(
-	 'name'         =>  'ownCloud',
-	 'username'     =>  '%u', // login username
-	 'password'     =>  '%p', // login password
-	 'url'          =>  'https://${PRIMARY_HOSTNAME}/cloud/remote.php/dav/addressbooks/users/%u/contacts/',
-	 'active'       =>  true,
-	 'readonly'     =>  false,
-	 'refresh_time' => '02:00:00',
-	 'fixed'        =>  array('username','password'),
-	 'preemptive_auth' => '1',
-	 'hide'        =>  false,
+	 'accountname'   =>  'ownCloud',
+	 'username'      =>  '%u', // login username
+	 'password'      =>  '%p', // login password
+	 'discovery_url' =>  'https://${PRIMARY_HOSTNAME}/cloud/remote.php/dav/addressbooks/users/%u/contacts/',
+	 'active'        =>  true,
+	 'readonly'      =>  false,
+	 'refresh_time'  => '02:00:00',
+	 'fixed'         =>  array('username','password'),
+	 'preemptive_basic_auth' => true,
+	 'hide'          =>  false,
 );
 ?>
 EOF
