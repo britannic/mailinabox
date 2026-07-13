@@ -431,3 +431,11 @@ def test_add_and_get_webauthn_credentials(store):
 	assert [c["credential_id"] for c in alice] == [CRED_ID]
 	assert store.get_webauthn_credentials("bob@box.example.com")[0]["name"] == "Bob's phone"
 	assert store.get_webauthn_credentials("nobody@box.example.com") == []
+
+
+def test_update_webauthn_sign_count(store):
+	rowid = store.add_webauthn_credential("alice@box.example.com", CRED_ID, PUBKEY, 0, None, None, "k", now=NOW)
+	store.update_webauthn_sign_count(rowid, 7, now=NOW + 100)
+	row = store.get_webauthn_credential_by_id(CRED_ID)
+	assert row["sign_count"] == 7
+	assert row["last_used_at"] == NOW + 100

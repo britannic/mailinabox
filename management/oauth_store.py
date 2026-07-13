@@ -242,6 +242,12 @@ class OAuthStore:
 		row = self._execute_one("SELECT * FROM webauthn_credentials WHERE credential_id = ?", (credential_id,))
 		return dict(row) if row is not None else None
 
+	def update_webauthn_sign_count(self, cred_row_id, sign_count, now=None):
+		# Advance the stored signature counter after a successful assertion and
+		# record when the passkey was last used (one row, keyed by id).
+		now = _now(now)
+		self._write("UPDATE webauthn_credentials SET sign_count = ?, last_used_at = ? WHERE id = ?", (sign_count, now, cred_row_id))
+
 	def purge(self, now=None, keep_seconds=7 * 86400):
 		# Nightly cleanup (management/daily_tasks.sh). Rows are kept for
 		# keep_seconds after they stop being live: codes after expiry, tokens
