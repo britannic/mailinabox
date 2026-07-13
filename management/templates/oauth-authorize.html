@@ -17,6 +17,7 @@
   .actions { margin-left: 25%; padding-left: 15px; }
   button { padding: 6px 12px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; background: #fff; cursor: pointer; }
   .error { color: #a94442; text-align: center; margin: 1em; }
+  .passkey { margin: 1em 0; text-align: center; }
 </style>
 </head>
 <body>
@@ -55,7 +56,105 @@
       <button type="submit">Sign in</button>
     </div>
   </form>
+  {% if passkeys_enabled %}
+  <div id="passkeyError" class="error"></div>
+  <div class="passkey">
+    <button type="button" id="passkeyButton" hidden>Sign in with a passkey</button>
+  </div>
+  {% endif %}
 </div>
+{% if passkeys_enabled %}
+<script nonce="{{ csp_nonce }}">
+(function () {
+  "use strict";
+  var button = document.getElementById("passkeyButton");
+  var errorBox = document.getElementById("passkeyError");
+  if (!button || !window.PublicKeyCredential) { return; }
+  button.hidden = false;
+
+  function b64urlToBytes(value) {
+    var s = value.replace(/-/g, "+").replace(/_/g, "/");
+    while (s.length % 4) { s += "="; }
+    var bin = atob(s);
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) { bytes[i] = bin.charCodeAt(i); }
+    return bytes;
+  }
+  function bytesToB64url(buffer) {
+    var bytes = new Uint8Array(buffer);
+    var bin = "";
+    for (var i = 0; i < bytes.length; i++) { bin += String.fromCharCode(bytes[i]); }
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  // The authorize page is mounted at "<prefix>/oauth/authorize" (nginx keeps the
+  // "/admin" prefix); the webauthn routes are siblings under the same prefix.
+  var mount = window.location.pathname.replace(/\/oauth\/authorize$/, "");
+  var beginUrl = mount + "/auth/webauthn/authenticate/begin";
+  // Preserve the exact authorize query string: the server reads the OAuth params
+  // (client_id, redirect_uri, scope, state, code_challenge, ...) ONLY from request.args.
+  var finishUrl = mount + "/auth/webauthn/authenticate/finish" + window.location.search;
+
+  function fail(message) {
+    errorBox.textContent = message || "Could not sign in with a passkey. Please use your password.";
+    button.disabled = false;
+  }
+
+  button.addEventListener("click", function () {
+    errorBox.textContent = "";
+    button.disabled = true;
+    fetch(beginUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}"
+    }).then(function (resp) {
+      if (!resp.ok) { throw new Error("begin"); }
+      return resp.json();
+    }).then(function (options) {
+      var publicKey = {
+        challenge: b64urlToBytes(options.challenge),
+        rpId: options.rpId,
+        timeout: options.timeout,
+        userVerification: options.userVerification || "required",
+        allowCredentials: (options.allowCredentials || []).map(function (cred) {
+          return { id: b64urlToBytes(cred.id), type: cred.type, transports: cred.transports };
+        })
+      };
+      return navigator.credentials.get({ publicKey: publicKey });
+    }).then(function (assertion) {
+      if (!assertion) { throw new Error("no-assertion"); }
+      var body = {
+        id: assertion.id,
+        rawId: bytesToB64url(assertion.rawId),
+        type: assertion.type,
+        response: {
+          clientDataJSON: bytesToB64url(assertion.response.clientDataJSON),
+          authenticatorData: bytesToB64url(assertion.response.authenticatorData),
+          signature: bytesToB64url(assertion.response.signature),
+          userHandle: assertion.response.userHandle ? bytesToB64url(assertion.response.userHandle) : null
+        },
+        clientExtensionResults: {}
+      };
+      return fetch(finishUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+    }).then(function (resp) {
+      return resp.json().then(function (data) { return { ok: resp.ok, data: data }; });
+    }).then(function (result) {
+      if (result.ok && result.data && result.data.redirect) {
+        window.location = result.data.redirect;  // JSON redirect (fetch cannot follow a 302)
+        return;
+      }
+      fail(result.data && result.data.error);
+    }).catch(function () {
+      fail();  // user cancel / no authenticator: leave the password form usable
+    });
+  });
+})();
+</script>
+{% endif %}
 {% endif %}
 </body>
 </html>
