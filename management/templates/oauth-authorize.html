@@ -6,16 +6,18 @@
 <title>{{ hostname }}</title>
 <style>
   body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 14px; color: #333; background: #fff; margin: 0; }
-  .title { margin: 1em; text-align: center; font-weight: 300; }
-  .subtitle { margin: 2em; text-align: center; }
-  .login { margin: 0 auto; max-width: 32em; padding: 0 1em; }
-  .form-group { margin-bottom: 15px; display: flex; align-items: baseline; }
-  .form-group label { flex: 0 0 25%; text-align: right; padding-right: 15px; font-weight: bold; }
-  .form-group .field { flex: 1; }
-  input[type=email], input[type=password], input[type=text] { width: 100%; box-sizing: border-box; padding: 6px 12px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; }
+  .title { margin: 1.25em 0 0.4em; text-align: center; font-weight: 300; }
+  .subtitle { margin: 0 0 2em; text-align: center; color: #555; }
+  .login { margin: 0 auto; max-width: 24em; padding: 0 1.5em; box-sizing: border-box; }
+  .form-group { margin-bottom: 1em; }
+  .form-group > label { display: block; margin-bottom: 5px; font-weight: bold; }
+  .field input, input[type=email], input[type=password], input[type=text] { width: 100%; box-sizing: border-box; padding: 8px 12px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; }
+  input:focus { border-color: #66afe9; outline: 0; box-shadow: 0 0 0 3px rgba(102,175,233,.25); }
   .help-block { margin-top: 5px; font-size: 90%; color: #737373; }
-  .actions { margin-left: 25%; padding-left: 15px; display: flex; justify-content: space-between; align-items: center; gap: 10px; }
-  .btn { display: inline-block; padding: 6px 12px; font-size: 14px; font-weight: 400; line-height: 1.42857143; text-align: center; white-space: nowrap; vertical-align: middle; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; color: #333; background-color: #fff; }
+  .remember { margin: 0 0 1.25em; }
+  .remember label { font-weight: normal; cursor: pointer; }
+  .actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .btn { display: inline-block; padding: 6px 14px; font-size: 14px; font-weight: 400; line-height: 1.42857143; text-align: center; white-space: nowrap; vertical-align: middle; cursor: pointer; border: 1px solid #ccc; border-radius: 4px; color: #333; background-color: #fff; }
   .btn-default { background-image: linear-gradient(to bottom, #fff 0, #e0e0e0 100%); border-color: #ccc; text-shadow: 0 1px 0 #fff; }
   .btn-default:hover { background-image: none; background-color: #e0e0e0; }
   .btn[hidden] { display: none; }
@@ -52,9 +54,8 @@
       </div>
     </div>
     {% endif %}
-    <div class="form-group">
-      <label></label>
-      <div class="field"><label for="rememberMe" style="flex:none; font-weight:normal; text-align:left; padding:0;"><input type="checkbox" id="rememberMe"> Remember me</label></div>
+    <div class="remember">
+      <label for="rememberMe"><input type="checkbox" id="rememberMe"> Remember me</label>
     </div>
     <input type="hidden" name="binding" value="{{ binding }}">
     <input type="hidden" name="binding_expires" value="{{ binding_expires }}">
