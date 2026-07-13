@@ -110,8 +110,8 @@ hide_output add-apt-repository -y universe
 # Install the duplicity PPA.
 hide_output add-apt-repository -y ppa:duplicity-team/duplicity-release-git
 
-# Stock PHP is now 8.1, but we're transitioning through 8.0 because
-# of Nextcloud.
+# PHP 8.2 from the PPA: Roundcube 1.7 requires PHP >= 8.1, and 8.2 is the
+# newest version Nextcloud 26 supports.
 hide_output add-apt-repository --y ppa:ondrej/php
 
 # ### Update Packages
