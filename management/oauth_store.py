@@ -248,6 +248,18 @@ class OAuthStore:
 		now = _now(now)
 		self._write("UPDATE webauthn_credentials SET sign_count = ?, last_used_at = ? WHERE id = ?", (sign_count, now, cred_row_id))
 
+	def rename_webauthn_credential(self, cred_row_id, user_email, name):
+		# Scoped by user_email so a user can only rename their own passkey.
+		# Returns True iff exactly one row matched.
+		rowcount, _ = self._write("UPDATE webauthn_credentials SET name = ? WHERE id = ? AND user_email = ?", (name, cred_row_id, user_email))
+		return rowcount == 1
+
+	def delete_webauthn_credential(self, cred_row_id, user_email):
+		# Scoped by user_email so a user can only revoke their own passkey.
+		# Returns True iff exactly one row matched.
+		rowcount, _ = self._write("DELETE FROM webauthn_credentials WHERE id = ? AND user_email = ?", (cred_row_id, user_email))
+		return rowcount == 1
+
 	def purge(self, now=None, keep_seconds=7 * 86400):
 		# Nightly cleanup (management/daily_tasks.sh). Rows are kept for
 		# keep_seconds after they stop being live: codes after expiry, tokens

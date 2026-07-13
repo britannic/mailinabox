@@ -439,3 +439,21 @@ def test_update_webauthn_sign_count(store):
 	row = store.get_webauthn_credential_by_id(CRED_ID)
 	assert row["sign_count"] == 7
 	assert row["last_used_at"] == NOW + 100
+
+
+def test_rename_and_delete_webauthn_credential_scoped(store):
+	rowid = store.add_webauthn_credential("alice@box.example.com", CRED_ID, PUBKEY, 0, None, None, "old name", now=NOW)
+	# A different user cannot rename Alice's credential.
+	assert store.rename_webauthn_credential(rowid, "mallory@box.example.com", "hacked") is False
+	assert store.get_webauthn_credential_by_id(CRED_ID)["name"] == "old name"
+	# The owner can.
+	assert store.rename_webauthn_credential(rowid, "alice@box.example.com", "new name") is True
+	assert store.get_webauthn_credential_by_id(CRED_ID)["name"] == "new name"
+	# A different user cannot delete it.
+	assert store.delete_webauthn_credential(rowid, "mallory@box.example.com") is False
+	assert store.get_webauthn_credential_by_id(CRED_ID) is not None
+	# An unknown row id is a no-op → False.
+	assert store.delete_webauthn_credential(99999, "alice@box.example.com") is False
+	# The owner can delete it.
+	assert store.delete_webauthn_credential(rowid, "alice@box.example.com") is True
+	assert store.get_webauthn_credential_by_id(CRED_ID) is None
