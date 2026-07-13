@@ -2017,8 +2017,8 @@ paths:
         - OAuth
       summary: Identity of the token's user
       description: |
-        Returns the authenticated user's email address and privilege list. Requires a Bearer access token
-        carrying the `profile` scope.
+        Returns the authenticated user's subject identifier, email address, and privilege list. Requires a
+        Bearer access token carrying the `profile` scope.
       operationId: oauthUserinfo
       security:
         - bearerAuth: []
@@ -2030,6 +2030,8 @@ paths:
               schema:
                 type: object
                 properties:
+                  sub:
+                    type: string
                   email:
                     type: string
                     format: email

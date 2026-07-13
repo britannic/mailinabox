@@ -47,6 +47,9 @@ else
 	echo "ok: no plugin fatals"; PASS=$((PASS+1))
 fi
 
+echo "==> roundcube.sqlite is in WAL journal mode (webmail.sh sed patch + PRAGMA)"
+check "sqlite journal_mode=wal" wal "$(dx sqlite3 /home/user-data/mail/roundcube/roundcube.sqlite 'PRAGMA journal_mode;')"
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] && echo "VERIFICATION PASS" || exit 1

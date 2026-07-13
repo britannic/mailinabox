@@ -17,10 +17,10 @@ Authentication:
 Upgrades:
 
 * Roundcube upgraded from 1.6.15 to 1.7.0. "Sign in with SSO" now completes — 1.6.15 could never satisfy the authorization server's mandatory PKCE policy.
-* Roundcube's OAuth client now reads the OIDC `sub` claim, which the userinfo endpoint returns.
+* The userinfo endpoint now returns an OIDC-style `sub` claim, which Roundcube 1.7's OAuth client expects (silences a per-login PHP warning).
 * OAuth error pages under `/mail/index.php/login/oauth` render styled again, using 1.7's static.php asset routing.
 * The Roundcube web installer is removed at install time; nginx never routes it to PHP either.
-* PHP upgraded from 8.0 to 8.2 across the box. Roundcube 1.7 requires PHP 8.1 or newer, and Nextcloud 26 (this fork's current release) is the ceiling for PHP 8.2 — boxes must already be on Nextcloud 26 before upgrading, since older Nextcloud step-upgrades can't run on PHP 8.2. The old php8.0-fpm packages are left installed but unused.
+* PHP upgraded from 8.0 to 8.2 across the box. Roundcube 1.7 requires PHP 8.1 or newer, and Nextcloud 26 (this fork's current release) is the ceiling for PHP 8.2 — boxes must already be on Nextcloud 26 before upgrading, since older Nextcloud step-upgrades can't run on PHP 8.2. The old php8.0-fpm packages are left installed and running but serving no traffic — this is deliberate rollback insurance, since a rollback to the previous release just repoints configs at 8.0.
 * RCMCardDAV updated from 4.4.3 to 5.1.3.
 * Verified end-to-end in the test container (`tests/docker/`): the smoke test, the SSO login flow, and post-upgrade health checks all pass.
 
