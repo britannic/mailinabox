@@ -551,8 +551,7 @@ def test_authenticate_finish_issues_valid_code(wbox, soft):
 
 
 def test_authenticate_endpoints_404_when_flag_disabled(wbox, soft):
-	with open(os.path.join(wbox.env["STORAGE_ROOT"], "settings.yaml"), "w") as f:
-		f.write("auth:\n  passkeys: false\n")
+	_write_settings(wbox.env, "auth:\n  passkeys: false\n")
 	assert wbox.http.post("/auth/webauthn/authenticate/begin").status_code == 404
 	enroll(wbox, soft)
 	r = wbox.http.post("/auth/webauthn/authenticate/finish", data="{}", content_type="application/json")
@@ -648,7 +647,7 @@ def test_authenticate_finish_counter_regression_rejected(wbox, soft):
 
 
 def test_authenticate_finish_totp_user_skips_mfa(wbox, soft):
-	wbox.deps.add_user("carol@box.example.com", password="pw", totp="123456")
+	wbox.deps.add_user("carol@box.example.com", totp="123456")
 	enroll(wbox, soft, email="carol@box.example.com")
 	_, challenge = pkce_pair()
 	r = sign_in(wbox, soft, challenge)

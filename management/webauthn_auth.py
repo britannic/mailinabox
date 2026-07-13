@@ -250,7 +250,7 @@ def init_webauthn(app, env, deps):
 		# The OAuth request params are read ONLY from the query string (the
 		# ceremony fetch preserves the authorize query); the body carries only
 		# the WebAuthn assertion -- hidden fields are never trusted (blocker B1).
-		p = oauth_server._authorize_request_params()
+		p = oauth_server._authorize_request_params()  # noqa: SLF001 -- intentional cross-module reuse (blocker B1); part of oauth_server's documented Task 6 interface
 		now = int(time.time())
 		try:
 			credential = AuthenticationCredential.parse_raw(request.get_data(as_text=True))
