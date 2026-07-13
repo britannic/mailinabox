@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import secrets
+import threading
 import time
 
 from flask import request, jsonify, Response, abort
@@ -39,6 +40,69 @@ from webauthn.helpers.structs import (
 )
 
 logger = logging.getLogger("miab.webauthn")
+
+# --- Unauthenticated begin-endpoint hardening (spec §9.14/§10) ---
+#
+# SHARED-LOCK CONTENTION: every WebAuthn ceremony reaches auth.sqlite through
+# the ONE lock-serialized sqlite connection owned by oauth_server.current_store
+# — the same connection that serializes every Bearer-token validation on the
+# box. The two *unauthenticated* begin endpoints each INSERT a challenge row,
+# so unthrottled begin spam is a write-amplification + lock-contention vector,
+# and fail2ban only ever sees failed *finish* assertions, never begin abuse.
+# Two in-daemon controls bound that surface: (1) a per-IP request cap enforced
+# by an in-memory _RateLimiter whose OWN lock is independent of auth.sqlite's,
+# so throttled clients are refused without ever queuing on the shared DB lock;
+# and (2) a ceiling on the number of live unconsumed `authentication`
+# challenges, capping the auth.sqlite backlog under distributed (many-IP) begin
+# spam. Both run in a before_request guard that short-circuits before any route
+# body — and its challenge write — executes. The daemon runs a single gunicorn
+# worker (see daemon.py), so one in-process _RateLimiter is the whole box's
+# authoritative view.
+
+_BEGIN_RATE_MAX = 20             # allowed begin requests per IP per window
+_BEGIN_RATE_WINDOW = 60          # seconds
+_BEGIN_RATE_PRUNE_AT = 4096      # sweep stale IP entries once the map grows past this
+_MAX_OUTSTANDING_AUTH_CHALLENGES = 200  # live unconsumed `authentication` challenges
+
+_BEGIN_PATHS = ("/auth/webauthn/register/begin", "/auth/webauthn/authenticate/begin")
+_AUTHENTICATE_BEGIN_PATH = "/auth/webauthn/authenticate/begin"
+
+
+class _RateLimiter:
+	# Per-IP fixed-window request counter, entirely in-process. Its lock is
+	# deliberately NOT auth.sqlite's lock: a throttled caller never touches the
+	# shared connection. A flood of distinct IPs cannot grow the map without
+	# bound — stale windows are swept once it crosses _BEGIN_RATE_PRUNE_AT.
+	def __init__(self, max_requests, window_seconds):
+		self.max_requests = max_requests
+		self.window_seconds = window_seconds
+		self._windows = {}  # ip -> [window_start_epoch, count]
+		self._lock = threading.Lock()
+
+	def check(self, ip, now=None):
+		# Record and allow the request, or return False if `ip` is over the cap
+		# for the current window. O(1) amortized.
+		now = time.time() if now is None else now
+		with self._lock:
+			if len(self._windows) > _BEGIN_RATE_PRUNE_AT:
+				horizon = now - self.window_seconds
+				self._windows = {k: v for k, v in self._windows.items() if v[0] > horizon}
+			window = self._windows.get(ip)
+			if window is None or now - window[0] >= self.window_seconds:
+				self._windows[ip] = [now, 1]
+				return True
+			if window[1] >= self.max_requests:
+				return False
+			window[1] += 1
+			return True
+
+
+def _client_ip():
+	# Same source of truth as daemon.log_failed_login: nginx sets
+	# X-Forwarded-For on every proxied request; fall back to remote_addr for
+	# direct localhost callers (setup-time / tests).
+	forwarded = request.headers.getlist("X-Forwarded-For")
+	return forwarded[0] if forwarded else request.remote_addr
 
 
 def _json_error(message, status=400):

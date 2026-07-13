@@ -764,3 +764,20 @@ def test_management_endpoints_404_when_feature_disabled(wbox, monkeypatch):
 	assert wbox.http.get("/auth/webauthn/credentials", headers=headers).status_code == 404
 	assert wbox.http.patch(f"/auth/webauthn/credentials/{cred_id}", json={"name": "x"}, headers=headers).status_code == 404
 	assert wbox.http.delete(f"/auth/webauthn/credentials/{cred_id}", headers=headers).status_code == 404
+
+
+# --- Unauthenticated begin-endpoint hardening + consolidated feature-flag gate (Task 8) ---
+
+
+def test_rate_limiter_fixed_window():
+	rl = webauthn_auth._RateLimiter(max_requests=3, window_seconds=60)
+	now = 1_000.0
+	# First 3 requests from one IP in the window are allowed, the 4th is not.
+	assert rl.check("203.0.113.4", now=now) is True
+	assert rl.check("203.0.113.4", now=now) is True
+	assert rl.check("203.0.113.4", now=now) is True
+	assert rl.check("203.0.113.4", now=now) is False
+	# A different IP has its own independent budget.
+	assert rl.check("203.0.113.5", now=now) is True
+	# Once the window rolls over, the same IP is allowed again.
+	assert rl.check("203.0.113.4", now=now + 60) is True
